@@ -55,6 +55,20 @@ export interface EngineOptions {
   difficulty: Difficulty;
   /** seconds added to the song time before judging (positive = judge later) */
   inputOffset: number;
+  /** adjust inputOffset from the player's own hit offsets while playing */
+  autoCalibrate: boolean;
+}
+
+const AUTO_MIN_SAMPLES = 8;
+const AUTO_WINDOW = 24;
+const AUTO_DEADBAND = 0.012; // sec
+const AUTO_GAIN = 0.4;
+const AUTO_LIMIT = 0.4; // sec
+
+function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
 export class Engine {
@@ -63,6 +77,10 @@ export class Engine {
   readonly events: JudgeEvent[] = [];
   private cursor = 0; // first note that can still be judged
   private readonly rule: { miss: number; heal: number };
+  private recent: number[] = [];
+  /** current judgement offset (sec); changes while autoCalibrate is on */
+  inputOffset: number;
+  readonly initialInputOffset: number;
   retired = false;
   finished = false;
 
@@ -70,6 +88,8 @@ export class Engine {
     readonly notes: Note[],
     private readonly opts: EngineOptions,
   ) {
+    this.inputOffset = opts.inputOffset;
+    this.initialInputOffset = opts.inputOffset;
     this.states = notes.map(() => ({ head: null, tail: null, holding: false, done: false }));
     this.rule = LIFE_RULE[opts.difficulty];
     const totalJudgements = notes.reduce((n, note) => n + (note.duration > 0 ? 2 : 1), 0);
@@ -114,12 +134,34 @@ export class Engine {
       s.combo++;
       s.maxCombo = Math.max(s.maxCombo, s.combo);
       if (kind === "perfect") s.life = Math.min(100, s.life + this.rule.heal);
-      if (offset !== null) {
+      if (offset !== null && !tail) {
         s.offsetSum += offset;
         s.offsetCount++;
+        this.autoAdjust(offset);
       }
     }
     this.events.push({ kind, lane: note.lane, noteIndex: note.index, offset, tail, at });
+  }
+
+  /** Shift the judgement offset toward the median of recent hit offsets. */
+  private autoAdjust(offset: number) {
+    if (!this.opts.autoCalibrate) return;
+    this.recent.push(offset);
+    if (this.recent.length > AUTO_WINDOW) this.recent.shift();
+    if (this.recent.length < AUTO_MIN_SAMPLES) return;
+    const med = median(this.recent);
+    if (Math.abs(med) <= AUTO_DEADBAND) return;
+    const step = med * AUTO_GAIN;
+    const next = Math.max(-AUTO_LIMIT, Math.min(AUTO_LIMIT, this.inputOffset - step));
+    const applied = this.inputOffset - next;
+    this.inputOffset = next;
+    // recent samples were measured under the old offset; re-express them under the new one
+    this.recent = this.recent.map((o) => o - applied);
+  }
+
+  /** Total correction applied by auto calibration in ms (positive = judge later). */
+  autoCorrectionMs(): number {
+    return Math.round((this.inputOffset - this.initialInputOffset) * 1000);
   }
 
   private static kindFor(absOffset: number): JudgeKind | null {
@@ -131,7 +173,7 @@ export class Engine {
 
   /** Advance time: force misses for notes that scrolled past, resolve holds. */
   update(songTime: number) {
-    const t = songTime + this.opts.inputOffset;
+    const t = songTime + this.inputOffset;
     for (let i = this.cursor; i < this.notes.length; i++) {
       const note = this.notes[i];
       const st = this.states[i];
@@ -158,7 +200,7 @@ export class Engine {
 
   /** A lane was pressed. Returns the judgement or null if nothing was in range. */
   press(lane: number, songTime: number): JudgeKind | null {
-    const t = songTime + this.opts.inputOffset;
+    const t = songTime + this.inputOffset;
     let bestIdx = -1;
     let bestAbs = Infinity;
     for (let i = this.cursor; i < this.notes.length; i++) {
@@ -185,7 +227,7 @@ export class Engine {
 
   /** A lane was released: drops any hold in progress on that lane. */
   release(lane: number, songTime: number) {
-    const t = songTime + this.opts.inputOffset;
+    const t = songTime + this.inputOffset;
     for (let i = this.cursor; i < this.notes.length; i++) {
       const note = this.notes[i];
       if (note.time - t > WINDOW.good) break;

@@ -2,12 +2,13 @@ import type { Note } from "./chart";
 import type { Engine, JudgeKind } from "./engine";
 
 const LANES = 4;
-const LANE_COLORS = ["#35e0ff", "#ff3df0", "#ff3df0", "#35e0ff"];
+// Rose Quartz (#f7cac9) + Serenity (#92a8d1)
+const LANE_COLORS = ["#92a8d1", "#f7cac9", "#f7cac9", "#92a8d1"];
 const JUDGE_COLOR: Record<JudgeKind, string> = {
   perfect: "#ffffff",
-  great: "#37f08a",
-  good: "#ffd23f",
-  miss: "#ff4d4d",
+  great: "#92a8d1",
+  good: "#f7cac9",
+  miss: "#f08a8a",
 };
 const JUDGE_LABEL: Record<JudgeKind, string> = {
   perfect: "PERFECT",
@@ -104,8 +105,8 @@ export class Renderer {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     // background
     const g = ctx.createLinearGradient(0, 0, 0, height);
-    g.addColorStop(0, "#07080c");
-    g.addColorStop(1, "#111422");
+    g.addColorStop(0, "#121726");
+    g.addColorStop(1, "#1b2338");
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, width, height);
 
@@ -124,7 +125,7 @@ export class Renderer {
         ctx.fillStyle = lg;
         ctx.fillRect(x, 0, lw, hitY);
       }
-      ctx.strokeStyle = "rgba(255,255,255,0.08)";
+      ctx.strokeStyle = "rgba(146,168,209,0.18)";
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(x + 0.5, 0);
@@ -133,7 +134,7 @@ export class Renderer {
     }
 
     // hit line
-    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.strokeStyle = "rgba(246,243,245,0.9)";
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.moveTo(0, hitY);

@@ -4,7 +4,11 @@ const SettingsSchema = z.object({
   /** seconds a note takes to travel from the top to the hit line */
   approach: z.number().min(0.5).max(3).default(1.3),
   /** input offset in ms; positive = judge later */
-  offsetMs: z.number().min(-300).max(300).default(0),
+  offsetMs: z.number().min(-400).max(400).default(0),
+  /** shifts where notes are drawn (and judged) relative to the video, ms; positive = later */
+  visualOffsetMs: z.number().min(-500).max(500).default(0),
+  /** measure the player's hit offsets during play and adjust offsetMs on the fly */
+  autoCalibrate: z.boolean().default(true),
   vibrate: z.boolean().default(true),
   nickname: z.string().max(12).default(""),
 });

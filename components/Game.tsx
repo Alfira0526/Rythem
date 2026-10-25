@@ -8,17 +8,9 @@ import { SONGS } from "@/lib/songs";
 import { getPlayerId, loadLocalBest, loadSettings, saveLocalBest, saveSettings, type Settings } from "@/lib/settings";
 import { createPlayer, isVideoAdvancing, SyncClock, YT_STATE, type YTPlayer } from "@/lib/youtube";
 import { fetchLeaderboard, submitScore, type Leaderboard, type SubmitResult } from "@/lib/api";
+import { S } from "@/lib/strings";
 
-type Screen =
-  | "home"
-  | "tutorial"
-  | "settings"
-  | "ranking"
-  | "loading"
-  | "ready"
-  | "playing"
-  | "paused"
-  | "result";
+type Screen = "home" | "tutorial" | "settings" | "ranking" | "loading" | "ready" | "playing" | "paused" | "result";
 
 const KEY_LANES: Record<string, number> = { KeyD: 0, KeyF: 1, KeyJ: 2, KeyK: 3 };
 
@@ -29,8 +21,9 @@ interface Outcome {
   fullCombo: boolean;
   counts: Record<JudgeKind, number>;
   retired: boolean;
-  retiredAt: number | null;
   avgOffsetMs: number | null;
+  autoCorrectionMs: number;
+  finalOffsetMs: number;
 }
 
 export default function Game() {
@@ -43,7 +36,7 @@ export default function Game() {
   const [readyHint, setReadyHint] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
-  const [hud, setHud] = useState({ score: 0, life: 100, progress: 0 });
+  const [hud, setHud] = useState({ score: 0, life: 100 });
   const [localBest, setLocalBest] = useState<Record<string, number>>({});
 
   const song = SONGS[songIdx];
@@ -65,6 +58,11 @@ export default function Game() {
 
   useEffect(() => {
     setLocalBest(loadLocalBest());
+  }, []);
+
+  const persistSettings = useCallback((s: Settings) => {
+    saveSettings(s);
+    setSettings(s);
   }, []);
 
   /* ---------------- lifecycle helpers ---------------- */
@@ -93,15 +91,15 @@ export default function Game() {
   const finishRun = useCallback(
     (retired: boolean) => {
       const engine = engineRef.current;
-      const clock = clockRef.current;
       if (!engine) return;
       cancelAnimationFrame(rafRef.current);
-      clock?.stop();
+      clockRef.current?.stop();
       try {
         playerRef.current?.pauseVideo();
       } catch {
         /* ignore */
       }
+      const finalOffsetMs = Math.round(engine.inputOffset * 1000);
       const out: Outcome = {
         score: engine.score,
         accuracy: engine.accuracy,
@@ -109,14 +107,19 @@ export default function Game() {
         fullCombo: !retired && engine.fullCombo,
         counts: { ...engine.stats.counts },
         retired,
-        retiredAt: retired ? (clock?.now() ?? null) : null,
         avgOffsetMs: engine.averageOffsetMs(),
+        autoCorrectionMs: engine.autoCorrectionMs(),
+        finalOffsetMs,
       };
       setOutcome(out);
       if (!retired && saveLocalBest(song.id, difficulty, out.score)) setLocalBest(loadLocalBest());
+      // persist the auto-calibrated offset for the next run
+      if (settingsRef.current.autoCalibrate && Math.abs(out.autoCorrectionMs) >= 5 && engine.stats.offsetCount >= 8) {
+        persistSettings({ ...settingsRef.current, offsetMs: Math.max(-400, Math.min(400, finalOffsetMs)) });
+      }
       setScreen("result");
     },
-    [difficulty, song.id],
+    [difficulty, song.id, persistSettings],
   );
 
   /* ---------------- loading: chart + player ---------------- */
@@ -129,14 +132,12 @@ export default function Game() {
     try {
       const res = await fetch(song.chartUrl, { cache: "no-store" });
       if (!res.ok) throw new Error(`chart ${res.status}`);
-      const parsed = ChartSchema.parse(await res.json());
-      setChart(parsed);
+      setChart(ChartSchema.parse(await res.json()));
     } catch (e) {
-      setLoadError(`채보를 불러오지 못했어요 (${(e as Error).message})`);
+      setLoadError(S.chartLoadFail((e as Error).message));
     }
   }, [song.chartUrl]);
 
-  // Create the YouTube player once the chart is loaded and the host div exists.
   useEffect(() => {
     if (screen !== "loading" || !chart || !ytHostRef.current || playerRef.current) return;
     let cancelled = false;
@@ -150,7 +151,7 @@ export default function Game() {
       onStateChange: (state) => {
         if (state === YT_STATE.ENDED && screenRef.current === "playing") finishRun(false);
       },
-      onError: (code) => setLoadError(`YouTube 플레이어 오류 (${code}). 이 영상은 임베드가 허용되지 않을 수 있어요.`),
+      onError: (code) => setLoadError(S.ytError(code)),
     })
       .then((player) => {
         if (cancelled) {
@@ -172,14 +173,16 @@ export default function Game() {
     const player = playerRef.current;
     const canvas = canvasRef.current;
     if (!player || !chart || !canvas) return;
-    notesRef.current = toNotes(chart.difficulties[difficulty], chart.videoOffset);
+    const s = settingsRef.current;
+    notesRef.current = toNotes(chart.difficulties[difficulty], chart.videoOffset + s.visualOffsetMs / 1000);
     engineRef.current = new Engine(notesRef.current, {
       difficulty,
-      inputOffset: settingsRef.current.offsetMs / 1000,
+      inputOffset: s.offsetMs / 1000,
+      autoCalibrate: s.autoCalibrate,
     });
     rendererRef.current = new Renderer(canvas);
     clockRef.current = new SyncClock(player);
-    setHud({ score: 0, life: 100, progress: 0 });
+    setHud({ score: 0, life: 100 });
     setReadyHint(null);
     try {
       player.seekTo(0, true);
@@ -188,7 +191,6 @@ export default function Game() {
     } catch {
       /* ignore */
     }
-    // wait until the video really advances (ads / buffering excluded)
     let prev = -1;
     let waited = 0;
     const tick = () => {
@@ -205,7 +207,7 @@ export default function Game() {
         prev = -1;
       }
       waited += 1;
-      if (waited === 90) setReadyHint("영상의 ▶ 재생 버튼을 직접 눌러 주세요. 광고가 나오면 끝난 뒤 출발해요.");
+      if (waited === 90) setReadyHint(S.readyHint);
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
@@ -241,9 +243,7 @@ export default function Game() {
         finishRun(false);
         return;
       }
-      if (++hudTick % 6 === 0) {
-        setHud({ score: engine.score, life: engine.stats.life, progress: Math.min(1, songTime / chart.duration) });
-      }
+      if (++hudTick % 6 === 0) setHud({ score: engine.score, life: engine.stats.life });
       rafRef.current = requestAnimationFrame(loop);
     };
     rafRef.current = requestAnimationFrame(loop);
@@ -260,9 +260,8 @@ export default function Game() {
     const clock = clockRef.current;
     const renderer = rendererRef.current;
     if (!engine || !clock || !renderer || screenRef.current !== "playing") return;
-    const t = clock.now();
     renderer.pressLane(lane, performance.now() / 1000);
-    const kind = engine.press(lane, t);
+    const kind = engine.press(lane, clock.now());
     if (kind && settingsRef.current.vibrate && "vibrate" in navigator) {
       try {
         navigator.vibrate(kind === "perfect" ? 12 : 8);
@@ -279,14 +278,28 @@ export default function Game() {
     engine.release(lane, clock.now());
   }, []);
 
+  const pauseGame = useCallback(() => {
+    if (screenRef.current !== "playing") return;
+    cancelAnimationFrame(rafRef.current);
+    try {
+      playerRef.current?.pauseVideo();
+    } catch {
+      /* ignore */
+    }
+    for (const lane of pointerLanes.current.values()) releaseLane(lane);
+    pointerLanes.current.clear();
+    keyDown.current.clear();
+    setScreen("paused");
+  }, [releaseLane]);
+
   useEffect(() => {
     if (screen !== "playing") return;
     const down = (e: KeyboardEvent) => {
-      const lane = KEY_LANES[e.code];
       if (e.code === "Escape") {
         pauseGame();
         return;
       }
+      const lane = KEY_LANES[e.code];
       if (lane === undefined || keyDown.current.has(e.code)) return;
       keyDown.current.add(e.code);
       e.preventDefault();
@@ -309,8 +322,7 @@ export default function Game() {
       window.removeEventListener("keyup", up);
       document.removeEventListener("visibilitychange", onHide);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, pressLane, releaseLane]);
+  }, [screen, pressLane, releaseLane, pauseGame]);
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const renderer = rendererRef.current;
@@ -327,25 +339,6 @@ export default function Game() {
   };
 
   /* ---------------- pause / resume ---------------- */
-
-  function pauseGame() {
-    if (screenRef.current !== "playing") return;
-    cancelAnimationFrame(rafRef.current);
-    try {
-      playerRef.current?.pauseVideo();
-    } catch {
-      /* ignore */
-    }
-    // release any holds so they are not stuck
-    for (const lane of pointerLanes.current.values()) releaseLane(lane);
-    pointerLanes.current.clear();
-    keyDown.current.clear();
-    setScreen("paused");
-  }
-
-  const resumeGame = () => {
-    setCountdown(3);
-  };
 
   useEffect(() => {
     if (countdown === null) return;
@@ -399,8 +392,7 @@ export default function Game() {
         <SettingsScreen
           settings={settings}
           onSave={(s) => {
-            saveSettings(s);
-            setSettings(s);
+            persistSettings(s);
             setScreen("home");
           }}
           onBack={() => setScreen("home")}
@@ -415,7 +407,7 @@ export default function Game() {
         <div className="flex h-dvh flex-col no-select">
           {/* HUD */}
           <div className="flex items-center gap-3 px-3 py-2 text-xs font-bold">
-            <button className="btn btn-ghost px-2 py-1" onClick={screen === "playing" ? pauseGame : goHome} aria-label="pause">
+            <button className="btn btn-ghost px-2 py-1" onClick={screen === "playing" ? pauseGame : goHome} aria-label={screen === "playing" ? S.paused : S.back}>
               {screen === "playing" ? "❚❚" : "‹"}
             </button>
             <div className="flex-1">
@@ -423,11 +415,17 @@ export default function Game() {
                 <span className="muted">{song.title} · {DIFFICULTY_LABEL[difficulty]}</span>
                 <span className="tabular-nums">{hud.score.toLocaleString("en-US")}</span>
               </div>
-              <div className="mt-1 h-1.5 w-full overflow-hidden rounded bg-white/10">
-                <div
-                  className="h-full rounded transition-[width] duration-150"
-                  style={{ width: `${hud.life}%`, background: hud.life > 30 ? "var(--ok)" : "var(--bad)" }}
-                />
+              <div className="mt-1 flex items-center gap-2">
+                <span className="text-[10px] muted">HP</span>
+                <div className="h-1.5 flex-1 overflow-hidden rounded bg-white/10">
+                  <div
+                    className="h-full rounded transition-[width] duration-150"
+                    style={{
+                      width: `${hud.life}%`,
+                      background: hud.life > 30 ? "linear-gradient(90deg, var(--serenity), var(--rose))" : "var(--bad)",
+                    }}
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -440,16 +438,16 @@ export default function Game() {
                 {loadError ? (
                   <div className="px-4 text-center">
                     <p className="text-[var(--bad)]">{loadError}</p>
-                    <button className="btn mt-3" onClick={goHome}>돌아가기</button>
+                    <button className="btn mt-3" onClick={goHome}>{S.back}</button>
                   </div>
                 ) : (
-                  <span className="muted">MV와 채보를 불러오는 중…</span>
+                  <span className="muted">{S.loading}</span>
                 )}
               </div>
             )}
             {screen === "ready" && (
               <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-3 text-center text-xs">
-                {readyHint ? <span className="text-[var(--warn)]">{readyHint}</span> : <span className="muted">광고가 나오면 끝난 뒤 자동으로 출발해요</span>}
+                {readyHint ? <span className="text-[var(--warn)]">{readyHint}</span> : <span className="muted">{S.readyNote}</span>}
               </div>
             )}
           </div>
@@ -465,24 +463,24 @@ export default function Game() {
               onContextMenu={(e) => e.preventDefault()}
             />
             {screen === "ready" && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/60">
-                <p className="text-sm muted">{DIFFICULTY_LABEL[difficulty]} · {notesCount(chart, difficulty)} notes</p>
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-[var(--bg)]/70">
+                <p className="text-sm muted">{DIFFICULTY_LABEL[difficulty]} · {S.notes(chart ? chart.difficulties[difficulty].length : 0)}</p>
                 <button className="btn btn-primary px-10 py-4 text-lg" onClick={beginRace} disabled={!playerRef.current}>
-                  눌러서 출발
+                  {S.tapToStart}
                 </button>
-                <p className="text-xs muted">키보드: D F J K · 모바일: 레인 터치</p>
+                <p className="text-xs muted">{S.controlsHint}</p>
               </div>
             )}
             {screen === "paused" && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/75">
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[var(--bg)]/85">
                 {countdown !== null ? (
                   <span className="text-6xl font-black">{countdown}</span>
                 ) : (
                   <>
-                    <p className="text-lg font-bold">일시정지</p>
-                    <button className="btn btn-primary w-48" onClick={resumeGame}>계속하기</button>
-                    <button className="btn w-48" onClick={retry}>처음부터 다시</button>
-                    <button className="btn btn-ghost w-48" onClick={goHome}>그만하기</button>
+                    <p className="text-lg font-bold">{S.paused}</p>
+                    <button className="btn btn-primary w-48" onClick={() => setCountdown(3)}>{S.resume}</button>
+                    <button className="btn w-48" onClick={retry}>{S.restart}</button>
+                    <button className="btn btn-ghost w-48" onClick={goHome}>{S.quit}</button>
                   </>
                 )}
               </div>
@@ -493,11 +491,7 @@ export default function Game() {
                 songId={song.id}
                 difficulty={difficulty}
                 settings={settings}
-                onNickname={(nick) => {
-                  const s = { ...settings, nickname: nick };
-                  saveSettings(s);
-                  setSettings(s);
-                }}
+                onNickname={(nick) => persistSettings({ ...settings, nickname: nick })}
                 onRetry={retry}
                 onRanking={() => {
                   destroyPlayer();
@@ -512,10 +506,6 @@ export default function Game() {
       )}
     </div>
   );
-}
-
-function notesCount(chart: Chart | null, d: Difficulty) {
-  return chart ? chart.difficulties[d].length : 0;
 }
 
 /* ====================== screens ====================== */
@@ -535,42 +525,35 @@ function HomeScreen(props: {
   const many = SONGS.length > 1;
   return (
     <div className="flex min-h-dvh flex-col justify-center gap-6 px-5 py-8">
-      <div className="text-center">
-        <p className="text-[11px] font-extrabold tracking-[6px] muted">RHYTHM LANE</p>
-      </div>
-      <div className="card flex items-center justify-between p-4">
+      <p className="text-center text-[11px] font-extrabold tracking-[6px]" style={{ color: "var(--serenity)" }}>{S.appName}</p>
+      <div className="card flex items-center justify-between p-4" style={{ borderColor: "var(--serenity-deep)" }}>
         <button className="btn btn-ghost" disabled={!many} onClick={() => props.setSongIdx((props.songIdx + SONGS.length - 1) % SONGS.length)}>‹</button>
         <div className="text-center">
           <p className="text-2xl font-black">{song.title}</p>
           <p className="text-sm muted">{song.artist}</p>
-          {many && <p className="mt-1 text-xs muted">{SONGS.length}곡 중 {props.songIdx + 1}번째</p>}
+          {many && <p className="mt-1 text-xs muted">{S.songCount(props.songIdx + 1, SONGS.length)}</p>}
         </div>
         <button className="btn btn-ghost" disabled={!many} onClick={() => props.setSongIdx((props.songIdx + 1) % SONGS.length)}>›</button>
       </div>
       <div>
-        <p className="mb-2 text-sm muted">난이도 선택</p>
+        <p className="mb-2 text-sm muted">{S.difficulty}</p>
         <div className="grid grid-cols-3 gap-2">
           {DIFFICULTIES.map((d) => (
-            <button
-              key={d}
-              className="btn"
-              style={props.difficulty === d ? { borderColor: "var(--ink)", background: "var(--panel-2)" } : {}}
-              onClick={() => props.setDifficulty(d)}
-            >
+            <button key={d} className={`btn ${props.difficulty === d ? "btn-selected" : ""}`} onClick={() => props.setDifficulty(d)}>
               {DIFFICULTY_LABEL[d]}
             </button>
           ))}
         </div>
-        <p className="mt-2 text-xs muted">이 기기 최고 {props.best ? props.best.toLocaleString("en-US") : "—"}</p>
+        <p className="mt-2 text-xs muted">{S.bestOnDevice} {props.best ? props.best.toLocaleString("en-US") : "—"}</p>
       </div>
-      <button className="btn btn-primary py-4 text-lg" onClick={props.onStart}>레이스 시작</button>
+      <button className="btn btn-primary py-4 text-lg" onClick={props.onStart}>{S.play}</button>
       <div className="grid grid-cols-3 gap-2">
-        <button className="btn" onClick={props.onSettings}>설정</button>
-        <button className="btn" onClick={props.onTutorial}>도움말</button>
-        <button className="btn" onClick={props.onRanking}>랭킹</button>
+        <button className="btn" onClick={props.onSettings}>{S.settings}</button>
+        <button className="btn" onClick={props.onTutorial}>{S.howTo}</button>
+        <button className="btn" onClick={props.onRanking}>{S.leaderboard}</button>
       </div>
       <p className="text-center text-[11px] muted">
-        음악과 영상은 YouTube 공식 MV 임베드로 재생돼요. <a className="underline" href="/editor">채보 에디터</a>
+        {S.footer} <a className="underline" href="/editor">{S.editorLink}</a>
       </p>
     </div>
   );
@@ -579,15 +562,12 @@ function HomeScreen(props: {
 function TutorialScreen({ onBack }: { onBack: () => void }) {
   return (
     <div className="flex min-h-dvh flex-col gap-4 px-5 py-8">
-      <Header title="도움말" onBack={onBack} />
+      <Header title={S.tutorialTitle} onBack={onBack} />
       <div className="card space-y-3 p-4 text-sm leading-relaxed">
-        <p><b>탭</b> · 노트가 판정선에 닿을 때 해당 레인을 누르세요. 왼쪽 두 레인은 왼손, 오른쪽 두 레인은 오른손이 편해요.</p>
-        <p><b>롱노트</b> · 막대가 끝날 때까지 손을 떼지 않아요. 너무 일찍 떼면 MISS예요.</p>
-        <p><b>판정</b> · PERFECT 100 · GREAT 80 · GOOD 50 · MISS 0. 만점은 1,000,000점이에요.</p>
-        <p><b>LIFE</b> · MISS마다 줄고 PERFECT마다 조금 회복돼요. 0이 되면 리타이어(DNF)예요.</p>
-        <p><b>키보드</b> · D F J K가 왼쪽부터 4개 레인이에요. ESC로 일시정지.</p>
-        <p><b>타이밍</b> · 소리보다 노트가 늦거나 빠르게 느껴지면 설정에서 입력 타이밍을 조절하세요. 결과 화면이 평균 오차를 알려줘요.</p>
-        <p className="muted">영상은 YouTube에서 재생되므로 광고가 붙을 수 있어요. 광고가 끝나면 자동으로 출발해요.</p>
+        {S.tutorial.map(([head, body]) => (
+          <p key={head}><b style={{ color: "var(--rose)" }}>{head}</b> · {body}</p>
+        ))}
+        <p className="muted">{S.tutorialNote}</p>
       </div>
     </div>
   );
@@ -595,38 +575,51 @@ function TutorialScreen({ onBack }: { onBack: () => void }) {
 
 function SettingsScreen({ settings, onSave, onBack }: { settings: Settings; onSave: (s: Settings) => void; onBack: () => void }) {
   const [s, setS] = useState(settings);
+  const sign = (n: number) => `${n > 0 ? "+" : ""}${n}ms`;
   return (
     <div className="flex min-h-dvh flex-col gap-4 px-5 py-8">
-      <Header title="설정" onBack={onBack} />
+      <Header title={S.settings} onBack={onBack} />
       <label className="card block p-4">
-        <div className="flex justify-between text-sm"><span>드라이버 이름</span><span className="muted">{s.nickname.length}/12</span></div>
-        <input
-          className="mt-2 w-full rounded-lg border border-[var(--line)] bg-black/30 px-3 py-2"
-          value={s.nickname}
-          maxLength={12}
-          placeholder="랭킹에 표시될 이름"
-          onChange={(e) => setS({ ...s, nickname: e.target.value })}
-        />
+        <div className="flex justify-between text-sm"><span>{S.nickname}</span><span className="muted">{s.nickname.length}/12</span></div>
+        <input className="field mt-2" value={s.nickname} maxLength={12} placeholder={S.nicknamePlaceholder}
+          onChange={(e) => setS({ ...s, nickname: e.target.value })} />
+        <p className="mt-1 text-xs muted">{S.nicknameHelp}</p>
       </label>
       <label className="card block p-4">
-        <div className="flex justify-between text-sm"><span>노트 속도</span><span className="muted">{s.approach.toFixed(1)}s</span></div>
+        <div className="flex justify-between text-sm"><span>{S.approach}</span><span className="muted">{s.approach.toFixed(1)}s</span></div>
         <input type="range" min={0.5} max={3} step={0.1} value={s.approach} className="mt-2 w-full"
           onChange={(e) => setS({ ...s, approach: Number(e.target.value) })} />
-        <p className="mt-1 text-xs muted">노트가 화면 위에서 판정선까지 내려오는 시간이에요. 짧을수록 빨라요.</p>
+        <p className="mt-1 text-xs muted">{S.approachHelp}</p>
+      </label>
+      <label className="card flex items-start justify-between gap-3 p-4 text-sm">
+        <span>
+          {S.autoCalibrate}
+          <span className="mt-1 block text-xs muted">{S.autoCalibrateHelp}</span>
+        </span>
+        <input type="checkbox" checked={s.autoCalibrate} onChange={(e) => setS({ ...s, autoCalibrate: e.target.checked })} />
       </label>
       <label className="card block p-4">
-        <div className="flex justify-between text-sm"><span>입력 타이밍</span><span className="muted">{s.offsetMs > 0 ? "+" : ""}{s.offsetMs}ms</span></div>
-        <input type="range" min={-300} max={300} step={5} value={s.offsetMs} className="mt-2 w-full"
+        <div className="flex justify-between text-sm"><span>{S.inputOffset}</span><span className="muted">{sign(s.offsetMs)}</span></div>
+        <input type="range" min={-400} max={400} step={5} value={s.offsetMs} className="mt-2 w-full"
           onChange={(e) => setS({ ...s, offsetMs: Number(e.target.value) })} />
-        <p className="mt-1 text-xs muted">결과 화면에서 "평균 Nms 늦게 눌렀어요"가 나오면 그 값만큼 + 쪽으로 옮기세요.</p>
+        <p className="mt-1 text-xs muted">{S.inputOffsetHelp}</p>
       </label>
-      <label className="card flex items-center justify-between p-4 text-sm">
-        <span>진동</span>
+      <label className="card block p-4">
+        <div className="flex justify-between text-sm"><span>{S.visualOffset}</span><span className="muted">{sign(s.visualOffsetMs)}</span></div>
+        <input type="range" min={-500} max={500} step={10} value={s.visualOffsetMs} className="mt-2 w-full"
+          onChange={(e) => setS({ ...s, visualOffsetMs: Number(e.target.value) })} />
+        <p className="mt-1 text-xs muted">{S.visualOffsetHelp}</p>
+      </label>
+      <label className="card flex items-start justify-between gap-3 p-4 text-sm">
+        <span>
+          {S.vibrate}
+          <span className="mt-1 block text-xs muted">{S.vibrateHelp}</span>
+        </span>
         <input type="checkbox" checked={s.vibrate} onChange={(e) => setS({ ...s, vibrate: e.target.checked })} />
       </label>
       <div className="grid grid-cols-2 gap-2">
-        <button className="btn" onClick={() => setS({ ...s, approach: 1.3, offsetMs: 0, vibrate: true })}>기본값으로</button>
-        <button className="btn btn-primary" onClick={() => onSave({ ...s, nickname: s.nickname.trim() })}>저장</button>
+        <button className="btn" onClick={() => setS({ ...s, approach: 1.3, offsetMs: 0, visualOffsetMs: 0, autoCalibrate: true, vibrate: true })}>{S.reset}</button>
+        <button className="btn btn-primary" onClick={() => onSave({ ...s, nickname: s.nickname.trim() })}>{S.save}</button>
       </div>
     </div>
   );
@@ -652,33 +645,33 @@ function RankingScreen({ songId, initialDifficulty, onBack }: { songId: string; 
   }, [songId, difficulty, playerId]);
   return (
     <div className="flex min-h-dvh flex-col gap-4 px-5 py-8">
-      <Header title="랭킹" onBack={onBack} />
+      <Header title={S.leaderboard} onBack={onBack} />
       <div className="grid grid-cols-3 gap-2">
         {DIFFICULTIES.map((d) => (
-          <button key={d} className="btn" style={difficulty === d ? { borderColor: "var(--ink)" } : {}} onClick={() => setDifficulty(d)}>
+          <button key={d} className={`btn ${difficulty === d ? "btn-selected" : ""}`} onClick={() => setDifficulty(d)}>
             {DIFFICULTY_LABEL[d]}
           </button>
         ))}
       </div>
-      {error && <p className="text-sm text-[var(--bad)]">랭킹 서버에 연결하지 못했어요 ({error})</p>}
-      {!data && !error && <p className="text-sm muted">기록을 불러오는 중…</p>}
+      {error && <p className="text-sm text-[var(--bad)]">{S.serverFail(error)}</p>}
+      {!data && !error && <p className="text-sm muted">{S.loadingRecords}</p>}
       {data && (
         <div className="card overflow-hidden">
-          {data.storage === "memory" && <p className="bg-[var(--warn)]/10 px-3 py-2 text-xs text-[var(--warn)]">DATABASE_URL이 없어 서버 메모리에만 저장 중이에요 (재시작 시 초기화).</p>}
-          {data.me && <p className="px-3 py-2 text-xs muted">내 순위 {data.me.rank}위 · {data.me.score.toLocaleString("en-US")}</p>}
-          {data.rows.length === 0 && <p className="px-3 py-6 text-center text-sm muted">아직 등록된 기록이 없어요.</p>}
+          {data.storage === "memory" && <p className="px-3 py-2 text-xs text-[var(--warn)]">{S.memoryWarning}</p>}
+          {data.me && <p className="px-3 py-2 text-xs muted">{S.myRank(data.me.rank, data.me.score)}</p>}
+          {data.rows.length === 0 && <p className="px-3 py-6 text-center text-sm muted">{S.noRecords}</p>}
           {data.rows.map((r) => (
             <div key={r.playerId} className="flex items-center gap-3 border-t border-[var(--line)] px-3 py-2 text-sm"
-              style={r.playerId === playerId ? { background: "rgba(53,224,255,0.08)" } : {}}>
-              <span className="w-7 text-right font-bold tabular-nums">{r.rank}</span>
-              <span className="flex-1 truncate">{r.nickname}{r.fullCombo && <span className="ml-1 text-[10px] text-[var(--ok)]">FC</span>}</span>
+              style={r.playerId === playerId ? { background: "rgba(247,202,201,0.12)" } : {}}>
+              <span className="w-7 text-right font-bold tabular-nums" style={r.rank <= 3 ? { color: "var(--rose)" } : {}}>{r.rank}</span>
+              <span className="flex-1 truncate">{r.nickname}{r.fullCombo && <span className="ml-1 text-[10px]" style={{ color: "var(--serenity)" }}>FC</span>}</span>
               <span className="tabular-nums">{r.score.toLocaleString("en-US")}</span>
               <span className="w-14 text-right text-xs muted tabular-nums">{r.accuracy.toFixed(2)}%</span>
             </div>
           ))}
         </div>
       )}
-      <p className="text-center text-xs muted">상위 50위까지</p>
+      <p className="text-center text-xs muted">{S.top50}</p>
     </div>
   );
 }
@@ -724,18 +717,20 @@ function ResultPanel(props: {
     }
   };
 
-  const offsetHint =
-    o.avgOffsetMs !== null && Math.abs(o.avgOffsetMs) >= 15
-      ? `평균 ${Math.abs(o.avgOffsetMs)}ms ${o.avgOffsetMs > 0 ? "늦게" : "빠르게"} 눌렀어요. 설정의 입력 타이밍을 ${o.avgOffsetMs > 0 ? "+" : "-"} 쪽으로 옮기면 맞아요.`
-      : null;
+  const hints: string[] = [];
+  if (Math.abs(o.autoCorrectionMs) >= 5) hints.push(S.autoApplied(o.finalOffsetMs));
+  else if (o.avgOffsetMs !== null && Math.abs(o.avgOffsetMs) >= 15)
+    hints.push(o.avgOffsetMs > 0 ? S.offsetLate(o.avgOffsetMs) : S.offsetEarly(-o.avgOffsetMs));
 
   return (
     <div className="absolute inset-0 overflow-y-auto bg-[var(--bg)]/95 p-4">
-      <p className="text-center text-xs font-extrabold tracking-[4px] muted">{o.retired ? "RETIRED · DNF" : "FINISH"}</p>
+      <p className="text-center text-xs font-extrabold tracking-[4px]" style={{ color: o.retired ? "var(--bad)" : "var(--serenity)" }}>
+        {o.retired ? S.gameOver : S.clear}
+      </p>
       <p className="mt-1 text-center text-4xl font-black tabular-nums">{o.score.toLocaleString("en-US")}</p>
       <p className="text-center text-sm muted">
-        정확도 {o.accuracy.toFixed(2)}% · 최대 콤보 {o.maxCombo}
-        {o.fullCombo && <span className="ml-2 font-bold text-[var(--ok)]">{o.counts.great + o.counts.good === 0 ? "ALL PERFECT" : "FULL COMBO"}</span>}
+        {S.accuracy} {o.accuracy.toFixed(2)}% · {S.maxCombo} {o.maxCombo}
+        {o.fullCombo && <span className="ml-2 font-bold" style={{ color: "var(--rose)" }}>{o.counts.great + o.counts.good === 0 ? S.allPerfect : S.fullCombo}</span>}
       </p>
       <div className="mt-3 grid grid-cols-4 gap-2 text-center text-xs">
         {(["perfect", "great", "good", "miss"] as JudgeKind[]).map((k) => (
@@ -745,38 +740,32 @@ function ResultPanel(props: {
           </div>
         ))}
       </div>
-      {offsetHint && <p className="mt-3 text-xs text-[var(--warn)]">{offsetHint}</p>}
+      {hints.map((h) => <p key={h} className="mt-3 text-xs text-[var(--warn)]">{h}</p>)}
 
       <div className="card mt-3 p-3 text-sm">
         {o.retired ? (
-          <p className="muted">완주해야 랭킹에 기록을 등록할 수 있어요. LIFE를 지키며 다시 도전해 보세요.</p>
+          <p className="muted">{S.mustClear}</p>
         ) : state === "done" && result ? (
           <p>
-            {result.improved ? "랭킹에 등록했어요." : "기존 기록이 더 높아서 그대로 두었어요."}
-            {result.rank && <span className="muted"> 현재 {result.rank}위 · 최고 {result.best.toLocaleString("en-US")}</span>}
-            {result.storage === "memory" && <span className="block text-xs text-[var(--warn)]">서버가 메모리 저장 모드예요. 재배포 시 초기화돼요.</span>}
+            {result.improved ? S.submitted : S.notImproved}
+            {result.rank && <span className="muted"> {S.currentRank(result.rank, result.best)}</span>}
+            {result.storage === "memory" && <span className="block text-xs text-[var(--warn)]">{S.memoryWarning}</span>}
           </p>
         ) : (
           <div className="flex gap-2">
-            <input
-              className="min-w-0 flex-1 rounded-lg border border-[var(--line)] bg-black/30 px-3 py-2"
-              placeholder="드라이버 이름"
-              maxLength={12}
-              value={nick}
-              onChange={(e) => setNick(e.target.value)}
-            />
+            <input className="field min-w-0 flex-1" placeholder={S.nickname} maxLength={12} value={nick} onChange={(e) => setNick(e.target.value)} />
             <button className="btn btn-primary" disabled={!nick.trim() || state === "submitting"} onClick={submit}>
-              {state === "submitting" ? "등록 중…" : state === "failed" ? "다시 등록" : "랭킹 등록"}
+              {state === "submitting" ? S.submitting : state === "failed" ? S.submitRetry : S.submit}
             </button>
           </div>
         )}
-        {state === "failed" && <p className="mt-2 text-xs text-[var(--bad)]">등록에 실패했어요 ({err}). 이 기록은 이 기기에만 저장돼요.</p>}
+        {state === "failed" && <p className="mt-2 text-xs text-[var(--bad)]">{S.submitFailed(err ?? "")}</p>}
       </div>
 
       <div className="mt-3 grid grid-cols-3 gap-2">
-        <button className="btn" onClick={props.onRetry}>다시 도전</button>
-        <button className="btn" onClick={props.onRanking}>랭킹 보기</button>
-        <button className="btn" onClick={props.onHome}>곡 선택</button>
+        <button className="btn btn-secondary" onClick={props.onRetry}>{S.retry}</button>
+        <button className="btn" onClick={props.onRanking}>{S.viewLeaderboard}</button>
+        <button className="btn" onClick={props.onHome}>{S.toHome}</button>
       </div>
     </div>
   );
@@ -785,7 +774,7 @@ function ResultPanel(props: {
 function Header({ title, onBack }: { title: string; onBack: () => void }) {
   return (
     <div className="flex items-center gap-3">
-      <button className="btn btn-ghost px-2" onClick={onBack} aria-label="back">‹</button>
+      <button className="btn btn-ghost px-2" onClick={onBack} aria-label={S.back}>‹</button>
       <h2 className="text-lg font-bold">{title}</h2>
     </div>
   );

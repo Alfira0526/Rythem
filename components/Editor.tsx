@@ -128,7 +128,7 @@ export default function Editor() {
       const hitY = H * 0.8;
       const yFor = (tt: number) => hitY - (tt - t) * PX_PER_SEC;
       const lw = W / LANES;
-      ctx.fillStyle = "#0b0d14";
+      ctx.fillStyle = "#121726";
       ctx.fillRect(0, 0, W, H);
       // beat grid
       const tStart = t - (H - hitY) / PX_PER_SEC;
@@ -167,10 +167,10 @@ export default function Editor() {
         const x = lane * lw + lw * 0.12;
         const w = lw * 0.76;
         if (dur > 0) {
-          ctx.fillStyle = "rgba(53,224,255,0.3)";
+          ctx.fillStyle = "rgba(146,168,209,0.35)";
           ctx.fillRect(x + w * 0.3, yFor(shifted + dur), w * 0.4, dur * PX_PER_SEC);
         }
-        ctx.fillStyle = lane === 0 || lane === 3 ? "#35e0ff" : "#ff3df0";
+        ctx.fillStyle = lane === 0 || lane === 3 ? "#92a8d1" : "#f7cac9";
         ctx.fillRect(x, y - 7, w, 14);
       }
       // hit line
@@ -268,7 +268,7 @@ export default function Editor() {
   return (
     <div className="mx-auto grid min-h-dvh max-w-[1100px] grid-cols-1 gap-3 p-3 md:grid-cols-[360px_1fr]">
       <div className="space-y-3 text-sm">
-        <h1 className="text-lg font-bold">채보 에디터 · {chart.title}</h1>
+        <h1 className="text-lg font-bold">채보 편집기 · {chart.title}</h1>
         <div className="relative w-full bg-black" style={{ aspectRatio: "16 / 9" }}>
           <div ref={hostRef} className="absolute inset-0 [&>div]:h-full [&>div]:w-full [&_iframe]:h-full [&_iframe]:w-full" />
         </div>
@@ -288,7 +288,7 @@ export default function Editor() {
         <div className="card space-y-2 p-3">
           <div className="grid grid-cols-3 gap-1">
             {DIFFICULTIES.map((d) => (
-              <button key={d} className="btn px-2 py-1" style={difficulty === d ? { borderColor: "var(--ink)" } : {}} onClick={() => setDifficulty(d)}>
+              <button key={d} className={`btn px-2 py-1 ${difficulty === d ? "btn-selected" : ""}`} onClick={() => setDifficulty(d)}>
                 {DIFFICULTY_LABEL[d]} <span className="muted">{chart.difficulties[d].length}</span>
               </button>
             ))}

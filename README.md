@@ -10,6 +10,8 @@ only on your own machine to generate a first-draft chart, and is git-ignored.
 - Canvas 2D renderer, no game engine
 - YouTube IFrame API + a smoothed sync clock (`lib/youtube.ts`)
 - Ranking API (`app/api/scores`) on Postgres, with an in-memory fallback for local dev
+- Vercel Analytics (`@vercel/analytics`) mounted in the root layout
+- Palette: Rose Quartz `#F7CAC9` + Serenity `#92A8D1` on a dark serenity-tinted base
 - Chart generator (`tools/generate_chart.py`, librosa) and an in-browser chart editor (`/editor`)
 
 ## Run locally
@@ -65,3 +67,11 @@ Score = points / max points × 1,000,000. Life starts at 100; MISS costs 5 / 7 /
 (easy / normal / hard), PERFECT heals 0.8 / 0.6 / 0.5; life 0 = retire (DNF).
 Hold notes are judged at the head and again at the tail (release too early = MISS).
 Windows are deliberately wide because the clock comes from a YouTube embed.
+
+## Timing calibration
+
+Settings → **타이밍 자동 보정** (on by default). While you play, the engine keeps a rolling
+median of your hit offsets (last 24 hits) and moves the judgement offset toward it, so
+judgement settles within the first dozen notes. The final value is saved as the
+**판정 오프셋** setting for the next run. **노트 위치 보정** shifts where notes are drawn
+when they look early/late against the video. All UI text lives in `lib/strings.ts`.
