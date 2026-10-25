@@ -37,6 +37,17 @@ the UI shows a warning in that case.
 2. Add a Postgres integration (Neon is free) or paste a `DATABASE_URL` env var.
 3. Deploy. Share the URL.
 
+## Test bed and promotion
+
+`lib/songs.ts` gives every song a `status`. `live` songs are public. `test` songs, the
+chart editor (`/editor`) and their leaderboards are served only to IPs listed in
+`EDITOR_ALLOWED_IPS` (comma-separated; a trailing `.` or `:` allows a prefix). Open
+`/api/access` on the deployed site to read the IP Vercel sees for you. With the variable
+unset nothing is privileged in production; `next dev` allows everything.
+
+Workflow for a new song: add it as `test`, calibrate its `videoOffset` in the editor,
+overwrite the chart JSON, then flip `status` to `live` and deploy.
+
 ## Add or regenerate a chart
 
 ```bash
@@ -78,8 +89,12 @@ then download the JSON and overwrite `public/charts/<id>.json`.
 | GOOD | ±170 ms | 50 |
 | MISS | — | 0 |
 
-Score = points / max points × 1,000,000. HP starts at 100; MISS costs 5 / 7 / 9 / 11
-(easy / normal / hard / extreme), PERFECT heals 0.8 / 0.6 / 0.5 / 0.4; HP 0 = game over.
+Score = points / max points × 1,000,000. HP starts at 100; MISS costs 4 / 6 / 8 / 10
+(easy / normal / hard / extreme), PERFECT heals 1.0 / 0.7 / 0.5 / 0.4; HP 0 = game over.
+Notes fall 15 % slower on EASY and 10 % / 20 % faster on HARD / EXTREME than the
+player's setting. Every per-difficulty number lives in `lib/difficulty.ts`; chart density
+rules live in `DIFFICULTY_PARAMS` at the top of `tools/generate_chart.py` and can be
+overridden per run with `--tune level.key=value`.
 Hold notes are judged at the head and again at the tail (release too early = MISS).
 Windows are deliberately wide because the clock comes from a YouTube embed.
 

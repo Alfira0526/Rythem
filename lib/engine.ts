@@ -1,4 +1,6 @@
 import type { Difficulty, Note } from "./chart";
+import { DIFFICULTY_RULE, HOLD_RELEASE_GRACE, WINDOW } from "./difficulty";
+export { WINDOW } from "./difficulty";
 
 export type JudgeKind = "perfect" | "great" | "good" | "miss";
 
@@ -9,18 +11,8 @@ export const JUDGE_POINTS: Record<JudgeKind, number> = {
   miss: 0,
 };
 
-/** Windows are generous on purpose: the clock comes from a YouTube embed. */
-export const WINDOW = { perfect: 0.065, great: 0.115, good: 0.17 } as const;
 
-export const LIFE_RULE: Record<Difficulty, { miss: number; heal: number }> = {
-  easy: { miss: 5, heal: 0.8 },
-  normal: { miss: 7, heal: 0.6 },
-  hard: { miss: 9, heal: 0.5 },
-  extreme: { miss: 11, heal: 0.4 },
-};
 
-/** released this early before the tail counts as dropping the hold */
-const HOLD_RELEASE_GRACE = 0.14;
 
 export interface NoteState {
   head: JudgeKind | null;
@@ -77,6 +69,7 @@ export class Engine {
   private readonly capture: number;
   /** judgement offset in seconds (positive = judge later) */
   readonly inputOffset: number;
+  readonly difficulty: Difficulty;
   /** signed offsets of every non-miss head hit, in order */
   readonly hitOffsets: number[] = [];
   retired = false;
@@ -87,9 +80,10 @@ export class Engine {
     private readonly opts: EngineOptions,
   ) {
     this.inputOffset = opts.inputOffset;
+    this.difficulty = opts.difficulty;
     this.capture = Math.max(WINDOW.good, opts.captureWindow ?? WINDOW.good);
     this.states = notes.map(() => ({ head: null, tail: null, holding: false, done: false }));
-    this.rule = LIFE_RULE[opts.difficulty];
+    this.rule = DIFFICULTY_RULE[opts.difficulty];
     const totalJudgements = notes.reduce((n, note) => n + (note.duration > 0 ? 2 : 1), 0);
     this.stats = {
       points: 0,

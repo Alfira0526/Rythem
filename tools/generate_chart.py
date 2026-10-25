@@ -18,6 +18,25 @@ import argparse, json, math, sys
 import numpy as np
 import librosa
 
+# ---------------------------------------------------------------------------
+# Per-difficulty density rules. Override any value per run with
+#   --tune hard.chord_pct=85 --tune easy.beat_every=1
+#   beat_every   : keep every Nth beat (easy only)
+#   loud_every   : keep every Nth beat inside loud sections (easy only)
+#   onset_pct    : onsets stronger than this percentile are added (None = beats only)
+#   grid         : snap added onsets to 1/grid of a beat (2 = 8ths, 4 = 16ths)
+#   min_gap_beats: minimum spacing between consecutive notes, in beats
+#   chord_pct    : onsets stronger than this percentile get a second lane (None = never)
+#   chord_gap    : minimum gap after a chord, in beats
+#   holds        : allow hold notes
+# ---------------------------------------------------------------------------
+DIFFICULTY_PARAMS = {
+    "easy":    dict(beat_every=4, loud_every=2, onset_pct=None, grid=1, min_gap_beats=0.9,  chord_pct=None, chord_gap=1.0,  holds=False),
+    "normal":  dict(beat_every=1, loud_every=1, onset_pct=None, grid=1, min_gap_beats=0.9,  chord_pct=None, chord_gap=1.0,  holds=True),
+    "hard":    dict(beat_every=1, loud_every=1, onset_pct=55,   grid=2, min_gap_beats=0.45, chord_pct=90,   chord_gap=0.9,  holds=True),
+    "extreme": dict(beat_every=1, loud_every=1, onset_pct=15,   grid=4, min_gap_beats=0.22, chord_pct=70,   chord_gap=0.45, holds=True),
+}
+
 
 def analyse(path):
     y, sr = librosa.load(path, sr=22050, mono=True)
@@ -53,7 +72,8 @@ def lane_for(centroid_value, lo, hi, rng, prev_lane):
     return lane
 
 
-def build(a, level, rng):
+def build(a, level, rng, params):
+    P = params[level]
     beats = a["beats"]
     beat = float(np.median(np.diff(beats))) if len(beats) > 1 else 60 / a["tempo"]
     onsets, strength = a["onsets"], a["strength"]
@@ -61,37 +81,34 @@ def build(a, level, rng):
     loud = np.percentile(rms, 60)
     s_hi = np.percentile(strength, 55)
     s_mid = np.percentile(strength, 35)
-    s_lo = np.percentile(strength, 15)
     c_lo, c_hi = np.percentile(cent, 10), np.percentile(cent, 90)
+    env_t = librosa.frames_to_time(np.arange(len(a["onset_env"])), sr=a["sr"], hop_length=a["hop"])
 
     cand = []  # (time, weight)
-    if level == "easy":
-        for i, b in enumerate(beats):
-            if at(times, rms, b) >= loud or i % 2 == 0:
-                cand.append((float(b), 1.0))
-    else:
-        env_t = librosa.frames_to_time(np.arange(len(a["onset_env"])), sr=a["sr"], hop_length=a["hop"])
-        for b in beats:
+    for i, b in enumerate(beats):
+        is_loud = at(times, rms, b) >= loud
+        every = P["loud_every"] if is_loud else P["beat_every"]
+        if i % max(1, every) == 0:
             cand.append((float(b), at(env_t, a["onset_env"], b)))
-        thr = {"normal": s_hi, "hard": s_mid, "extreme": s_lo}[level]
-        min_gap = beat / 4 * 0.9 if level in ("hard", "extreme") else beat / 2 * 0.9
-        for t, s in zip(onsets, strength):
-            if s < thr:
+    if P["onset_pct"] is not None:
+        thr = np.percentile(strength, P["onset_pct"])
+        div = P["grid"]
+        for t, w in zip(onsets, strength):
+            if w < thr:
                 continue
-            # snap to the nearest 16th (hard) / 8th (normal) grid
-            div = 4 if level in ("hard", "extreme") else 2
             nearest_beat = beats[np.argmin(np.abs(beats - t))]
             snapped = nearest_beat + round((t - nearest_beat) / (beat / div)) * (beat / div)
-            cand.append((float(snapped), float(s)))
-        cand.sort()
-        merged = []
-        for t, w in cand:
-            if merged and t - merged[-1][0] < min_gap:
-                if w > merged[-1][1]:
-                    merged[-1] = (t, w)
-                continue
-            merged.append((t, w))
-        cand = merged
+            cand.append((float(snapped), float(w)))
+    cand.sort()
+    min_gap = beat * P["min_gap_beats"]
+    merged = []
+    for t, w in cand:
+        if merged and t - merged[-1][0] < min_gap:
+            if w > merged[-1][1]:
+                merged[-1] = (t, w)
+            continue
+        merged.append((t, w))
+    cand = merged
 
     # drop anything before the first real sound or after the end
     first_sound = float(times[np.argmax(rms > 0.01)])
@@ -99,19 +116,18 @@ def build(a, level, rng):
 
     notes = []
     prev_lane = -1
+    chord_thr = np.percentile(strength, P["chord_pct"]) if P["chord_pct"] is not None else None
     for i, (t, w) in enumerate(cand):
         lane = lane_for(at(times, cent, t), c_lo, c_hi, rng, prev_lane)
         dur = 0.0
         gap = (cand[i + 1][0] - t) if i + 1 < len(cand) else 0
         nxt_w = cand[i + 1][1] if i + 1 < len(cand) else 0
-        if (level != "easy" and gap >= beat * 0.95 and w >= s_hi and nxt_w < s_mid
+        if (P["holds"] and gap >= beat * 0.95 and w >= s_hi and nxt_w < s_mid
                 and at(times, rms, t + gap * 0.6) >= loud * 0.8):
             # a strong hit followed by sustained sound and a weak next onset: hold it
             dur = round(min(gap + beat * 0.5, beat * 3), 3)
         notes.append([round(t, 3), lane, dur])
-        # chords on strong hits: hard on the loudest 10 %, extreme on the loudest 30 %
-        chord_pct = {"hard": 90, "extreme": 70}.get(level)
-        if chord_pct is not None and w >= np.percentile(strength, chord_pct) and gap >= beat * (0.9 if level == "hard" else 0.45):
+        if chord_thr is not None and w >= chord_thr and gap >= beat * P["chord_gap"]:
             other = (lane + 2) % 4 if level == "hard" else (lane + 1 + rng.integers(3)) % 4
             notes.append([round(t, 3), int(other), 0.0])
         prev_lane = lane
@@ -132,14 +148,32 @@ def main():
                    help="length of the YouTube video in seconds when it differs from the audio file")
     p.add_argument("--video-offset", type=float, default=0.0,
                    help="seconds to shift every note so the chart lines up with the video (e.g. intro length)")
+    p.add_argument("--tune", action="append", default=[], metavar="LEVEL.KEY=VALUE",
+                   help="override a DIFFICULTY_PARAMS entry, e.g. --tune hard.chord_pct=85")
     args = p.parse_args()
+
+    params = {k: dict(v) for k, v in DIFFICULTY_PARAMS.items()}
+    for item in args.tune:
+        key, _, val = item.partition("=")
+        level, _, name = key.partition(".")
+        if level not in params or name not in params[level]:
+            sys.exit(f"unknown --tune target {key}")
+        cur = params[level][name]
+        if val.lower() in ("none", "null"):
+            params[level][name] = None
+        elif isinstance(cur, bool):
+            params[level][name] = val.lower() in ("1", "true", "yes")
+        elif isinstance(cur, int) and not isinstance(cur, bool):
+            params[level][name] = int(float(val))
+        else:
+            params[level][name] = float(val)
 
     a = analyse(args.audio)
     rng = np.random.default_rng(args.seed)
     diffs = {}
     beat = 60 / a["tempo"]
     for level in ("easy", "normal", "hard", "extreme"):
-        notes, beat = build(a, level, rng)
+        notes, beat = build(a, level, rng, params)
         diffs[level] = notes
     chart = {
         "id": args.id,

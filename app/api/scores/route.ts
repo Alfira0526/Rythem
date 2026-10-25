@@ -5,6 +5,14 @@ import { z } from "zod";
 import { ChartSchema, DIFFICULTIES, UNLOCK_REQUIREMENT } from "@/lib/chart";
 import { getStore, storeKind } from "@/lib/db";
 import { findSong } from "@/lib/songs";
+import { isPrivileged } from "@/lib/access";
+
+/** Live songs are open to everyone; test-bed songs only to allow-listed IPs. */
+function songAvailable(songId: string, headers: Headers): boolean {
+  const song = findSong(songId);
+  if (!song) return false;
+  return song.status === "live" || isPrivileged(headers);
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,9 +52,10 @@ export async function GET(req: Request) {
   const songId = url.searchParams.get("songId") ?? "";
   const difficulty = url.searchParams.get("difficulty") ?? "";
   const playerId = url.searchParams.get("playerId");
-  if (!findSong(songId) || !(DIFFICULTIES as readonly string[]).includes(difficulty)) {
+  if (!(DIFFICULTIES as readonly string[]).includes(difficulty)) {
     return NextResponse.json({ error: "bad_request" }, { status: 400 });
   }
+  if (!songAvailable(songId, req.headers)) return NextResponse.json({ error: "song_unavailable" }, { status: 404 });
   const store = getStore();
   const rows = await store.top(songId, difficulty, 50);
   const me = playerId ? await store.rankOf(songId, difficulty, playerId) : null;
@@ -75,7 +84,7 @@ export async function POST(req: Request) {
   const parsed = SubmitSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "bad_request" }, { status: 400 });
   const s = parsed.data;
-  if (!findSong(s.songId)) return NextResponse.json({ error: "song_unavailable" }, { status: 404 });
+  if (!songAvailable(s.songId, req.headers)) return NextResponse.json({ error: "song_unavailable" }, { status: 404 });
 
   // Sanity checks against the chart: judgement counts and combo cannot exceed the note count.
   const chart = await loadChart(s.songId);

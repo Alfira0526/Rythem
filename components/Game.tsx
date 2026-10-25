@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChartSchema, DIFFICULTIES, DIFFICULTY_LABEL, UNLOCK_REQUIREMENT, toNotes, type Chart, type Difficulty, type Note } from "@/lib/chart";
 import { Engine, median, type JudgeKind } from "@/lib/engine";
 import { Renderer } from "@/lib/render";
-import { SONGS } from "@/lib/songs";
+import { liveSongs, visibleSongs, type SongMeta } from "@/lib/songs";
+import { DIFFICULTY_RULE } from "@/lib/difficulty";
 import { getPlayerId, loadLocalBest, loadSettings, loadUnlocks, saveLocalBest, saveSettings, saveUnlock, type Settings, type Unlocks } from "@/lib/settings";
 import { createPlayer, isVideoAdvancing, SyncClock, YT_STATE, type YTPlayer } from "@/lib/youtube";
 import { fetchLeaderboard, submitScore, type Leaderboard, type SubmitResult } from "@/lib/api";
@@ -42,6 +43,8 @@ export default function Game() {
   const [screen, setScreen] = useState<Screen>("home");
   const [mode, setMode] = useState<Mode>("play");
   const [songIdx, setSongIdx] = useState(0);
+  const [songs, setSongs] = useState<SongMeta[]>(() => liveSongs());
+  const [privileged, setPrivileged] = useState(false);
   const [difficulty, setDifficulty] = useState<Difficulty>("normal");
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const [chart, setChart] = useState<Chart | null>(null);
@@ -54,7 +57,7 @@ export default function Game() {
   const [localBest, setLocalBest] = useState<Record<string, number>>({});
   const [unlocks, setUnlocks] = useState<Unlocks>({});
 
-  const song = SONGS[songIdx];
+  const song = songs[Math.min(songIdx, songs.length - 1)];
 
   const ytHostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -77,6 +80,16 @@ export default function Game() {
   useEffect(() => {
     setLocalBest(loadLocalBest());
     setUnlocks(loadUnlocks());
+    // test-bed songs appear only for allow-listed connections
+    fetch("/api/access", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { privileged?: boolean } | null) => {
+        if (j?.privileged) {
+          setPrivileged(true);
+          setSongs(visibleSongs(true));
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const persistSettings = useCallback((s: Settings) => {
@@ -279,7 +292,7 @@ export default function Game() {
       const songTime = clock.now();
       const wall = performance.now() / 1000;
       engine.update(songTime);
-      renderer.draw(engine, notes, songTime, { approach: settingsRef.current.approach }, wall);
+      renderer.draw(engine, notes, songTime, { approach: settingsRef.current.approach * DIFFICULTY_RULE[engine.difficulty].approachScale }, wall);
       if (engine.retired) {
         finishRun(true);
         return;
@@ -424,6 +437,8 @@ export default function Game() {
     <div className="mx-auto flex min-h-dvh w-full max-w-[560px] flex-col">
       {screen === "home" && (
         <HomeScreen
+          songs={songs}
+          privileged={privileged}
           songIdx={songIdx}
           setSongIdx={setSongIdx}
           difficulty={difficulty}
@@ -593,6 +608,8 @@ export default function Game() {
 /* ====================== screens ====================== */
 
 function HomeScreen(props: {
+  songs: SongMeta[];
+  privileged: boolean;
   songIdx: number;
   setSongIdx: (i: number) => void;
   difficulty: Difficulty;
@@ -604,8 +621,9 @@ function HomeScreen(props: {
   onRanking: () => void;
   onTutorial: () => void;
 }) {
-  const song = SONGS[props.songIdx];
-  const many = SONGS.length > 1;
+  const songs = props.songs;
+  const song = songs[Math.min(props.songIdx, songs.length - 1)];
+  const many = songs.length > 1;
   const isLocked = (d: Difficulty) => !!UNLOCK_REQUIREMENT[d] && !props.unlocks[`${song.id}:${d}`];
   const lockedSel = isLocked(props.difficulty);
   const req = UNLOCK_REQUIREMENT[props.difficulty];
@@ -613,13 +631,16 @@ function HomeScreen(props: {
     <div className="flex min-h-dvh flex-col justify-center gap-6 px-5 py-8">
       <p className="text-center text-[11px] font-extrabold tracking-[6px]" style={{ color: "var(--serenity)" }}>{S.appName}</p>
       <div className="card flex items-center justify-between p-4" style={{ borderColor: "var(--serenity-deep)" }}>
-        <button className="btn btn-ghost" disabled={!many} onClick={() => props.setSongIdx((props.songIdx + SONGS.length - 1) % SONGS.length)}>‹</button>
+        <button className="btn btn-ghost" disabled={!many} onClick={() => props.setSongIdx((props.songIdx + songs.length - 1) % songs.length)}>‹</button>
         <div className="text-center">
-          <p className="text-2xl font-black">{song.title}</p>
+          <p className="text-2xl font-black">
+            {song.title}
+            {song.status === "test" && <span className="ml-2 align-middle rounded px-1.5 py-0.5 text-[10px] font-bold" style={{ background: "var(--serenity)", color: "#141a2b" }}>TEST</span>}
+          </p>
           <p className="text-sm muted">{song.artist}</p>
-          {many && <p className="mt-1 text-xs muted">{S.songCount(props.songIdx + 1, SONGS.length)}</p>}
+          {many && <p className="mt-1 text-xs muted">{S.songCount(props.songIdx + 1, songs.length)}</p>}
         </div>
-        <button className="btn btn-ghost" disabled={!many} onClick={() => props.setSongIdx((props.songIdx + 1) % SONGS.length)}>›</button>
+        <button className="btn btn-ghost" disabled={!many} onClick={() => props.setSongIdx((props.songIdx + 1) % songs.length)}>›</button>
       </div>
       <div>
         <p className="mb-2 text-sm muted">{S.difficulty}</p>
@@ -654,7 +675,8 @@ function HomeScreen(props: {
         <button className="btn" onClick={props.onRanking}>{S.leaderboard}</button>
       </div>
       <p className="text-center text-[11px] muted">
-        {S.footer} <a className="underline" href="/editor">{S.editorLink}</a>
+        {S.footer}
+        {props.privileged && <> <a className="underline" href="/editor">{S.editorLink}</a></>}
       </p>
     </div>
   );
