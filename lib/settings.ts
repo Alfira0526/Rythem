@@ -1,14 +1,19 @@
 import { z } from "zod";
 
+export const SPEED_LEVELS = 10;
+/** seconds a note takes to travel from the top to the hit line, per speed level (1 = slowest) */
+export function approachFor(level: number): number {
+  const l = Math.max(1, Math.min(SPEED_LEVELS, Math.round(level)));
+  return Math.round((2.4 - (l - 1) * 0.2) * 100) / 100; // 2.4s … 0.6s
+}
+
 const SettingsSchema = z.object({
-  /** seconds a note takes to travel from the top to the hit line */
-  approach: z.number().min(0.5).max(3).default(1.3),
-  /** input offset in ms; positive = judge later */
+  /** note speed level 1–10 (see approachFor) */
+  speedLevel: z.number().int().min(1).max(SPEED_LEVELS).default(6),
+  /** input offset in ms, added to the song time before judging (late presser → negative) */
   offsetMs: z.number().min(-400).max(400).default(0),
   /** shifts where notes are drawn (and judged) relative to the video, ms; positive = later */
   visualOffsetMs: z.number().min(-500).max(500).default(0),
-  /** how many hits a calibration run collects before computing the offset */
-  calibrationNotes: z.number().int().min(8).max(64).default(16),
   vibrate: z.boolean().default(true),
   nickname: z.string().max(12).default(""),
 });
@@ -31,7 +36,12 @@ export function loadSettings(): Settings {
   const raw = storage()?.getItem(KEY);
   if (!raw) return SettingsSchema.parse({});
   try {
-    return SettingsSchema.parse(JSON.parse(raw));
+    const obj = JSON.parse(raw) as Record<string, unknown>;
+    // migrate the old continuous "approach" (seconds) to the nearest speed level
+    if (typeof obj.approach === "number" && obj.speedLevel === undefined) {
+      obj.speedLevel = Math.max(1, Math.min(SPEED_LEVELS, Math.round((2.4 - obj.approach) / 0.2) + 1));
+    }
+    return SettingsSchema.parse(obj);
   } catch {
     return SettingsSchema.parse({});
   }

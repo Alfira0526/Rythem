@@ -2,20 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChartSchema, DIFFICULTIES, DIFFICULTY_LABEL, UNLOCK_REQUIREMENT, toNotes, type Chart, type Difficulty, type Note } from "@/lib/chart";
-import { Engine, median, type JudgeKind } from "@/lib/engine";
+import { Engine, type JudgeKind } from "@/lib/engine";
 import { Renderer } from "@/lib/render";
 import { liveSongs, visibleSongs, type SongMeta } from "@/lib/songs";
 import { DIFFICULTY_RULE } from "@/lib/difficulty";
-import { getPlayerId, loadLocalBest, loadSettings, loadUnlocks, saveLocalBest, saveSettings, saveUnlock, type Settings, type Unlocks } from "@/lib/settings";
+import { approachFor, getPlayerId, loadLocalBest, loadSettings, loadUnlocks, saveLocalBest, saveSettings, saveUnlock, SPEED_LEVELS, type Settings, type Unlocks } from "@/lib/settings";
+import Calibration from "@/components/Calibration";
 import { createPlayer, isVideoAdvancing, SyncClock, YT_STATE, type YTPlayer } from "@/lib/youtube";
 import { fetchLeaderboard, submitScore, type Leaderboard, type SubmitResult } from "@/lib/api";
 import { S } from "@/lib/strings";
 
-type Screen = "home" | "tutorial" | "settings" | "ranking" | "loading" | "ready" | "playing" | "paused" | "result";
-type Mode = "play" | "calibrate";
-
-/** a calibration run matches presses this far from a note (sec) */
-const CALIBRATION_CAPTURE = 0.3;
+type Screen = "home" | "tutorial" | "settings" | "calibrate" | "ranking" | "loading" | "ready" | "playing" | "paused" | "result";
 
 const KEY_LANES: Record<string, number> = { KeyD: 0, KeyF: 1, KeyJ: 2, KeyK: 3 };
 
@@ -31,17 +28,9 @@ interface Outcome {
   unlocked: Difficulty | null;
 }
 
-interface CalibrationOutcome {
-  samples: number;
-  medianMs: number | null;
-  spreadMs: number;
-  fromMs: number;
-  toMs: number;
-}
 
 export default function Game() {
   const [screen, setScreen] = useState<Screen>("home");
-  const [mode, setMode] = useState<Mode>("play");
   const [songIdx, setSongIdx] = useState(0);
   const [songs, setSongs] = useState<SongMeta[]>(() => liveSongs());
   const [privileged, setPrivileged] = useState(false);
@@ -52,8 +41,7 @@ export default function Game() {
   const [readyHint, setReadyHint] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
-  const [calibration, setCalibration] = useState<CalibrationOutcome | null>(null);
-  const [hud, setHud] = useState({ score: 0, life: 100, hits: 0 });
+  const [hud, setHud] = useState({ score: 0, life: 100 });
   const [localBest, setLocalBest] = useState<Record<string, number>>({});
   const [unlocks, setUnlocks] = useState<Unlocks>({});
 
@@ -68,14 +56,11 @@ export default function Game() {
   const notesRef = useRef<Note[]>([]);
   const rafRef = useRef(0);
   const screenRef = useRef<Screen>("home");
-  const modeRef = useRef<Mode>("play");
   const pointerLanes = useRef(new Map<number, number>());
   const keyDown = useRef(new Set<string>());
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   screenRef.current = screen;
-  modeRef.current = mode;
-  const runDifficulty: Difficulty = mode === "calibrate" ? "easy" : difficulty;
 
   useEffect(() => {
     setLocalBest(loadLocalBest());
@@ -117,8 +102,6 @@ export default function Game() {
     destroyPlayer();
     setChart(null);
     setOutcome(null);
-    setCalibration(null);
-    setMode("play");
     setScreen("home");
   }, [destroyPlayer]);
 
@@ -132,22 +115,6 @@ export default function Game() {
         playerRef.current?.pauseVideo();
       } catch {
         /* ignore */
-      }
-      if (modeRef.current === "calibrate") {
-        const offs = engine.hitOffsets;
-        const fromMs = Math.round(engine.inputOffset * 1000);
-        const med = offs.length >= 4 ? median(offs) : null;
-        const sorted = [...offs].sort((a, b) => a - b);
-        const spread = sorted.length >= 4 ? sorted[Math.floor(sorted.length * 0.75)] - sorted[Math.floor(sorted.length * 0.25)] : 0;
-        setCalibration({
-          samples: offs.length,
-          medianMs: med === null ? null : Math.round(med * 1000),
-          spreadMs: Math.round(spread * 1000),
-          fromMs,
-          toMs: med === null ? fromMs : Math.max(-400, Math.min(400, Math.round(fromMs - med * 1000))),
-        });
-        setScreen("result");
-        return;
       }
       const fullCombo = !retired && engine.fullCombo;
       let unlocked: Difficulty | null = null;
@@ -176,13 +143,10 @@ export default function Game() {
 
   /* ---------------- loading: chart + player ---------------- */
 
-  const startLoading = useCallback(async (nextMode: Mode = "play") => {
-    setMode(nextMode);
-    modeRef.current = nextMode;
+  const startLoading = useCallback(async () => {
     setLoadError(null);
     setReadyHint(null);
     setOutcome(null);
-    setCalibration(null);
     setScreen("loading");
     try {
       const res = await fetch(song.chartUrl, { cache: "no-store" });
@@ -229,18 +193,14 @@ export default function Game() {
     const canvas = canvasRef.current;
     if (!player || !chart || !canvas) return;
     const s = settingsRef.current;
-    const calibrating = modeRef.current === "calibrate";
-    const d: Difficulty = calibrating ? "easy" : difficulty;
-    notesRef.current = toNotes(chart.difficulties[d], chart.videoOffset + s.visualOffsetMs / 1000);
+    notesRef.current = toNotes(chart.difficulties[difficulty], chart.videoOffset + s.visualOffsetMs / 1000);
     engineRef.current = new Engine(notesRef.current, {
-      difficulty: d,
+      difficulty,
       inputOffset: s.offsetMs / 1000,
-      captureWindow: calibrating ? CALIBRATION_CAPTURE : undefined,
-      immortal: calibrating,
     });
     rendererRef.current = new Renderer(canvas);
     clockRef.current = new SyncClock(player);
-    setHud({ score: 0, life: 100, hits: 0 });
+    setHud({ score: 0, life: 100 });
     setReadyHint(null);
     try {
       player.seekTo(0, true);
@@ -292,21 +252,16 @@ export default function Game() {
       const songTime = clock.now();
       const wall = performance.now() / 1000;
       engine.update(songTime);
-      renderer.draw(engine, notes, songTime, { approach: settingsRef.current.approach * DIFFICULTY_RULE[engine.difficulty].approachScale }, wall);
+      renderer.draw(engine, notes, songTime, { approach: approachFor(settingsRef.current.speedLevel) * DIFFICULTY_RULE[engine.difficulty].approachScale }, wall);
       if (engine.retired) {
         finishRun(true);
-        return;
-      }
-      const calibrating = modeRef.current === "calibrate";
-      if (calibrating && engine.hitOffsets.length >= settingsRef.current.calibrationNotes) {
-        finishRun(false);
         return;
       }
       if (songTime > lastEnd + 1.5 || songTime >= chart.duration - 0.2) {
         finishRun(false);
         return;
       }
-      if (++hudTick % 6 === 0) setHud({ score: engine.score, life: engine.stats.life, hits: engine.hitOffsets.length });
+      if (++hudTick % 6 === 0) setHud({ score: engine.score, life: engine.stats.life });
       rafRef.current = requestAnimationFrame(loop);
     };
     rafRef.current = requestAnimationFrame(loop);
@@ -445,7 +400,7 @@ export default function Game() {
           setDifficulty={setDifficulty}
           best={localBest[bestKey]}
           unlocks={unlocks}
-          onStart={() => void startLoading("play")}
+          onStart={() => void startLoading()}
           onSettings={() => setScreen("settings")}
           onRanking={() => setScreen("ranking")}
           onTutorial={() => setScreen("tutorial")}
@@ -463,9 +418,20 @@ export default function Game() {
           }}
           onCalibrate={(s) => {
             persistSettings(s);
-            void startLoading("calibrate");
+            setScreen("calibrate");
           }}
           onBack={() => setScreen("home")}
+        />
+      )}
+
+      {screen === "calibrate" && (
+        <Calibration
+          settings={settings}
+          onApply={(ms) => {
+            persistSettings({ ...settings, offsetMs: ms });
+            setScreen("settings");
+          }}
+          onCancel={() => setScreen("settings")}
         />
       )}
 
@@ -482,12 +448,8 @@ export default function Game() {
             </button>
             <div className="flex-1">
               <div className="flex justify-between">
-                <span className="muted">
-                  {mode === "calibrate" ? S.calibrating : `${song.title} · ${DIFFICULTY_LABEL[runDifficulty]}`}
-                </span>
-                <span className="tabular-nums">
-                  {mode === "calibrate" ? S.calibrationProgress(hud.hits, settings.calibrationNotes) : hud.score.toLocaleString("en-US")}
-                </span>
+                <span className="muted">{song.title} · {DIFFICULTY_LABEL[difficulty]}</span>
+                <span className="tabular-nums">{hud.score.toLocaleString("en-US")}</span>
               </div>
               <div className="mt-1 flex items-center gap-2">
                 <span className="text-[10px] muted">HP</span>
@@ -538,11 +500,7 @@ export default function Game() {
             />
             {screen === "ready" && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-[var(--bg)]/70">
-                <p className="text-sm muted">
-                  {mode === "calibrate"
-                    ? S.calibrationGuide
-                    : `${DIFFICULTY_LABEL[runDifficulty]} · ${S.notes(chart ? chart.difficulties[runDifficulty].length : 0)}`}
-                </p>
+                <p className="text-sm muted">{DIFFICULTY_LABEL[difficulty]} · {S.notes(chart ? chart.difficulties[difficulty].length : 0)}</p>
                 <button className="btn btn-primary px-10 py-4 text-lg" onClick={beginRace} disabled={!playerRef.current}>
                   {S.tapToStart}
                 </button>
@@ -563,26 +521,7 @@ export default function Game() {
                 )}
               </div>
             )}
-            {screen === "result" && mode === "calibrate" && calibration && (
-              <CalibrationPanel
-                result={calibration}
-                onApply={() => {
-                  persistSettings({ ...settingsRef.current, offsetMs: calibration.toMs });
-                  destroyPlayer();
-                  setChart(null);
-                  setMode("play");
-                  setScreen("settings");
-                }}
-                onRetry={retry}
-                onCancel={() => {
-                  destroyPlayer();
-                  setChart(null);
-                  setMode("play");
-                  setScreen("settings");
-                }}
-              />
-            )}
-            {screen === "result" && mode === "play" && outcome && (
+            {screen === "result" && outcome && (
               <ResultPanel
                 outcome={outcome}
                 songId={song.id}
@@ -719,12 +658,17 @@ function SettingsScreen({
           onChange={(e) => setS({ ...s, nickname: e.target.value })} />
         <p className="mt-1 text-xs muted">{S.nicknameHelp}</p>
       </label>
-      <label className="card block p-4">
-        <div className="flex justify-between text-sm"><span>{S.approach}</span><span className="muted">{s.approach.toFixed(1)}s</span></div>
-        <input type="range" min={0.5} max={3} step={0.1} value={s.approach} className="mt-2 w-full"
-          onChange={(e) => setS({ ...s, approach: Number(e.target.value) })} />
-        <p className="mt-1 text-xs muted">{S.approachHelp}</p>
-      </label>
+      <div className="card block p-4">
+        <div className="flex justify-between text-sm"><span>{S.speed}</span><span className="muted">{S.level(s.speedLevel)}</span></div>
+        <div className="mt-2 grid grid-cols-5 gap-1">
+          {Array.from({ length: SPEED_LEVELS }, (_, i) => i + 1).map((lv) => (
+            <button key={lv} className={`btn px-0 py-2 text-sm ${s.speedLevel === lv ? "btn-selected" : ""}`} onClick={() => setS({ ...s, speedLevel: lv })}>
+              {lv}
+            </button>
+          ))}
+        </div>
+        <p className="mt-1 text-xs muted">{S.speedHelp(s.speedLevel, approachFor(s.speedLevel))}</p>
+      </div>
       <label className="card block p-4">
         <div className="flex justify-between text-sm"><span>{S.inputOffset}</span><span className="muted">{sign(s.offsetMs)}</span></div>
         <input type="range" min={-400} max={400} step={5} value={s.offsetMs} className="mt-2 w-full"
@@ -733,22 +677,6 @@ function SettingsScreen({
       </label>
       <div className="card block p-4">
         <p className="text-sm font-bold" style={{ color: "var(--rose)" }}>{S.calibration}</p>
-        <label className="mt-2 flex items-center justify-between text-sm">
-          <span>{S.calibrationNotes}</span>
-          <input
-            type="number"
-            inputMode="numeric"
-            min={8}
-            max={64}
-            step={1}
-            value={s.calibrationNotes}
-            className="field w-24 text-right"
-            onChange={(e) => {
-              const v = Number(e.target.value);
-              if (Number.isFinite(v)) setS({ ...s, calibrationNotes: Math.max(8, Math.min(64, Math.round(v))) });
-            }}
-          />
-        </label>
         <p className="mt-1 text-xs muted">{S.calibrationHelp}</p>
         <button className="btn btn-secondary mt-3 w-full" onClick={() => onCalibrate(clean(s))}>{S.calibrationStart}</button>
       </div>
@@ -766,7 +694,7 @@ function SettingsScreen({
         <input type="checkbox" checked={s.vibrate} onChange={(e) => setS({ ...s, vibrate: e.target.checked })} />
       </label>
       <div className="grid grid-cols-2 gap-2">
-        <button className="btn" onClick={() => setS({ ...s, approach: 1.3, offsetMs: 0, visualOffsetMs: 0, calibrationNotes: 16, vibrate: true })}>{S.reset}</button>
+        <button className="btn" onClick={() => setS({ ...s, speedLevel: 6, offsetMs: 0, visualOffsetMs: 0, vibrate: true })}>{S.reset}</button>
         <button className="btn btn-primary" onClick={() => onSave(clean(s))}>{S.save}</button>
       </div>
     </div>
@@ -920,35 +848,6 @@ function ResultPanel(props: {
         <button className="btn btn-secondary" onClick={props.onRetry}>{S.retry}</button>
         <button className="btn" onClick={props.onRanking}>{S.viewLeaderboard}</button>
         <button className="btn" onClick={props.onHome}>{S.toHome}</button>
-      </div>
-    </div>
-  );
-}
-
-function CalibrationPanel({ result: r, onApply, onRetry, onCancel }: {
-  result: CalibrationOutcome;
-  onApply: () => void;
-  onRetry: () => void;
-  onCancel: () => void;
-}) {
-  const ok = r.medianMs !== null;
-  return (
-    <div className="absolute inset-0 overflow-y-auto bg-[var(--bg)]/95 p-4">
-      <p className="text-center text-xs font-extrabold tracking-[4px]" style={{ color: "var(--serenity)" }}>{S.calibrationResult}</p>
-      {ok ? (
-        <>
-          <p className="mt-2 text-center text-3xl font-black tabular-nums">{r.medianMs! > 0 ? "+" : ""}{r.medianMs}ms</p>
-          <p className="text-center text-sm muted">{S.calibrationMeasured(r.medianMs!, r.samples)}</p>
-          <p className="mt-3 text-center text-sm">{S.calibrationChange(r.fromMs, r.toMs)}</p>
-          {r.spreadMs > 120 && <p className="mt-2 text-center text-xs text-[var(--warn)]">{S.calibrationNoisy}</p>}
-        </>
-      ) : (
-        <p className="mt-3 text-center text-sm text-[var(--warn)]">{S.calibrationTooFew}</p>
-      )}
-      <div className="mt-5 grid grid-cols-3 gap-2">
-        <button className="btn btn-primary" disabled={!ok} onClick={onApply}>{S.apply}</button>
-        <button className="btn btn-secondary" onClick={onRetry}>{S.measureAgain}</button>
-        <button className="btn" onClick={onCancel}>{S.cancel}</button>
       </div>
     </div>
   );
