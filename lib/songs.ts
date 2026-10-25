@@ -36,6 +36,13 @@ export const SONGS: SongMeta[] = [
     videoId: "Ar11flLQ-bI",
     chartUrl: "/charts/snapback.json",
   },
+  {
+    id: "not-personal",
+    title: "Not personal",
+    artist: "조슈아 (SEVENTEEN)",
+    videoId: "ckcpTLaYjKg",
+    chartUrl: "/charts/not-personal.json",
+  },
 ];
 
 export function findSong(id: string): SongMeta | undefined {
