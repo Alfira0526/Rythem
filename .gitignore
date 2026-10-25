@@ -1,0 +1,14 @@
+node_modules
+.next
+out
+.env
+.env.local
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
+# local audio for chart analysis only — never commit
+audio/
+*.mp3
+*.wav
+*.flac
+*.m4a
