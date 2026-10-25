@@ -26,7 +26,7 @@ export const SONGS: SongMeta[] = [
     artist: "호시 (HOSHI)",
     videoId: "ScdULYbnjOs",
     chartUrl: "/charts/agijagi.json",
-    status: "test",
+    status: "live",
   },
   {
     id: "boyfriend",
@@ -34,7 +34,7 @@ export const SONGS: SongMeta[] = [
     artist: "호시 (HOSHI)",
     videoId: "_RUY9qgP-5g",
     chartUrl: "/charts/boyfriend.json",
-    status: "test",
+    status: "live",
   },
   {
     id: "snapback",
@@ -42,7 +42,7 @@ export const SONGS: SongMeta[] = [
     artist: "호시 (HOSHI)",
     videoId: "Ar11flLQ-bI",
     chartUrl: "/charts/snapback.json",
-    status: "test",
+    status: "live",
   },
   {
     id: "not-personal",
@@ -50,7 +50,7 @@ export const SONGS: SongMeta[] = [
     artist: "조슈아 (SEVENTEEN)",
     videoId: "ckcpTLaYjKg",
     chartUrl: "/charts/not-personal.json",
-    status: "test",
+    status: "live",
   },
 ];
 
