@@ -73,6 +73,18 @@ EASY, NORMAL and HARD are open. **EXTREME** unlocks per song after a HARD full c
 player already has a HARD full-combo row on the leaderboard, so the unlock cannot be
 faked just by editing localStorage.
 
+## Two-thumb playability check
+
+Charts are meant to be played with two thumbs (left = lanes 1–2, right = lanes 3–4).
+`tools/check_chart.py` enforces that: at most two simultaneous notes, chords split across
+hands, nothing on a hand that is holding, and minimum same-hand / any-hand gaps per
+difficulty. The generator runs it automatically; run it on edited charts with
+
+```bash
+python3 tools/check_chart.py public/charts/*.json          # report
+python3 tools/check_chart.py public/charts/*.json --fix    # rewrite in place
+```
+
 ## Edit a chart
 
 Open `/editor`. Click an empty cell to add a note on the beat grid, click a note to delete it.
@@ -146,6 +158,18 @@ EASY, NORMAL and HARD are open. **EXTREME** unlocks per song after a HARD full c
 (stored in the browser). The ranking API also refuses an EXTREME score unless that
 player already has a HARD full-combo row on the leaderboard, so the unlock cannot be
 faked just by editing localStorage.
+
+## Two-thumb playability check
+
+Charts are meant to be played with two thumbs (left = lanes 1–2, right = lanes 3–4).
+`tools/check_chart.py` enforces that: at most two simultaneous notes, chords split across
+hands, nothing on a hand that is holding, and minimum same-hand / any-hand gaps per
+difficulty. The generator runs it automatically; run it on edited charts with
+
+```bash
+python3 tools/check_chart.py public/charts/*.json          # report
+python3 tools/check_chart.py public/charts/*.json --fix    # rewrite in place
+```
 
 ## Edit a chart
 

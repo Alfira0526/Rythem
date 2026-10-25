@@ -17,6 +17,9 @@ with a no-repeat rule so hands alternate.
 import argparse, json, math, sys
 import numpy as np
 import librosa
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from check_chart import check as two_thumb_check
 
 # ---------------------------------------------------------------------------
 # Per-difficulty density rules. Override any value per run with
@@ -124,11 +127,12 @@ def build(a, level, rng, params):
         nxt_w = cand[i + 1][1] if i + 1 < len(cand) else 0
         if (P["holds"] and gap >= beat * 0.95 and w >= s_hi and nxt_w < s_mid
                 and at(times, rms, t + gap * 0.6) >= loud * 0.8):
-            # a strong hit followed by sustained sound and a weak next onset: hold it
-            dur = round(min(gap + beat * 0.5, beat * 3), 3)
+            # a strong hit followed by sustained sound and a weak next onset: hold it,
+            # ending a quarter beat before the next note so the thumb is free again
+            dur = round(min(gap - beat * 0.25, beat * 3), 3)
         notes.append([round(t, 3), lane, dur])
         if chord_thr is not None and w >= chord_thr and gap >= beat * P["chord_gap"]:
-            other = (lane + 2) % 4 if level == "hard" else (lane + 1 + rng.integers(3)) % 4
+            other = (lane + 2) % 4 if level == "hard" else (2 + rng.integers(2) if lane < 2 else rng.integers(2))
             notes.append([round(t, 3), int(other), 0.0])
         prev_lane = lane
     notes.sort(key=lambda n: (n[0], n[1]))
@@ -174,6 +178,7 @@ def main():
     beat = 60 / a["tempo"]
     for level in ("easy", "normal", "hard", "extreme"):
         notes, beat = build(a, level, rng, params)
+        notes, _ = two_thumb_check(notes, level, fix=True)  # enforce two-thumb playability
         diffs[level] = notes
     chart = {
         "id": args.id,
