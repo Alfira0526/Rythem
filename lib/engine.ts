@@ -55,17 +55,13 @@ export interface EngineOptions {
   difficulty: Difficulty;
   /** seconds added to the song time before judging (positive = judge later) */
   inputOffset: number;
-  /** adjust inputOffset from the player's own hit offsets while playing */
-  autoCalibrate: boolean;
+  /** widest window a press can match (sec); calibration runs use a wider one */
+  captureWindow?: number;
+  /** calibration runs never end on empty life */
+  immortal?: boolean;
 }
 
-const AUTO_MIN_SAMPLES = 8;
-const AUTO_WINDOW = 24;
-const AUTO_DEADBAND = 0.012; // sec
-const AUTO_GAIN = 0.4;
-const AUTO_LIMIT = 0.4; // sec
-
-function median(xs: number[]): number {
+export function median(xs: number[]): number {
   const s = [...xs].sort((a, b) => a - b);
   const m = s.length >> 1;
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
@@ -77,10 +73,11 @@ export class Engine {
   readonly events: JudgeEvent[] = [];
   private cursor = 0; // first note that can still be judged
   private readonly rule: { miss: number; heal: number };
-  private recent: number[] = [];
-  /** current judgement offset (sec); changes while autoCalibrate is on */
-  inputOffset: number;
-  readonly initialInputOffset: number;
+  private readonly capture: number;
+  /** judgement offset in seconds (positive = judge later) */
+  readonly inputOffset: number;
+  /** signed offsets of every non-miss head hit, in order */
+  readonly hitOffsets: number[] = [];
   retired = false;
   finished = false;
 
@@ -89,7 +86,7 @@ export class Engine {
     private readonly opts: EngineOptions,
   ) {
     this.inputOffset = opts.inputOffset;
-    this.initialInputOffset = opts.inputOffset;
+    this.capture = Math.max(WINDOW.good, opts.captureWindow ?? WINDOW.good);
     this.states = notes.map(() => ({ head: null, tail: null, holding: false, done: false }));
     this.rule = LIFE_RULE[opts.difficulty];
     const totalJudgements = notes.reduce((n, note) => n + (note.duration > 0 ? 2 : 1), 0);
@@ -129,7 +126,7 @@ export class Engine {
     if (kind === "miss") {
       s.combo = 0;
       s.life = Math.max(0, s.life - this.rule.miss);
-      if (s.life <= 0) this.retired = true;
+      if (s.life <= 0 && !this.opts.immortal) this.retired = true;
     } else {
       s.combo++;
       s.maxCombo = Math.max(s.maxCombo, s.combo);
@@ -137,37 +134,16 @@ export class Engine {
       if (offset !== null && !tail) {
         s.offsetSum += offset;
         s.offsetCount++;
-        this.autoAdjust(offset);
+        this.hitOffsets.push(offset);
       }
     }
     this.events.push({ kind, lane: note.lane, noteIndex: note.index, offset, tail, at });
   }
 
-  /** Shift the judgement offset toward the median of recent hit offsets. */
-  private autoAdjust(offset: number) {
-    if (!this.opts.autoCalibrate) return;
-    this.recent.push(offset);
-    if (this.recent.length > AUTO_WINDOW) this.recent.shift();
-    if (this.recent.length < AUTO_MIN_SAMPLES) return;
-    const med = median(this.recent);
-    if (Math.abs(med) <= AUTO_DEADBAND) return;
-    const step = med * AUTO_GAIN;
-    const next = Math.max(-AUTO_LIMIT, Math.min(AUTO_LIMIT, this.inputOffset - step));
-    const applied = this.inputOffset - next;
-    this.inputOffset = next;
-    // recent samples were measured under the old offset; re-express them under the new one
-    this.recent = this.recent.map((o) => o - applied);
-  }
-
-  /** Total correction applied by auto calibration in ms (positive = judge later). */
-  autoCorrectionMs(): number {
-    return Math.round((this.inputOffset - this.initialInputOffset) * 1000);
-  }
-
-  private static kindFor(absOffset: number): JudgeKind | null {
+  private kindFor(absOffset: number): JudgeKind | null {
     if (absOffset <= WINDOW.perfect) return "perfect";
     if (absOffset <= WINDOW.great) return "great";
-    if (absOffset <= WINDOW.good) return "good";
+    if (absOffset <= this.capture) return "good";
     return null;
   }
 
@@ -177,9 +153,9 @@ export class Engine {
     for (let i = this.cursor; i < this.notes.length; i++) {
       const note = this.notes[i];
       const st = this.states[i];
-      if (note.time - t > WINDOW.good) break; // nothing later is judgeable yet
+      if (note.time - t > this.capture) break; // nothing later is judgeable yet
       if (st.done) continue;
-      if (st.head === null && t - note.time > WINDOW.good) {
+      if (st.head === null && t - note.time > this.capture) {
         this.record("miss", note, null, false, t);
         st.head = "miss";
         if (note.duration > 0) {
@@ -205,7 +181,7 @@ export class Engine {
     let bestAbs = Infinity;
     for (let i = this.cursor; i < this.notes.length; i++) {
       const note = this.notes[i];
-      if (note.time - t > WINDOW.good) break;
+      if (note.time - t > this.capture) break;
       if (note.lane !== lane || this.states[i].head !== null) continue;
       const abs = Math.abs(note.time - t);
       if (abs < bestAbs) {
@@ -214,7 +190,7 @@ export class Engine {
       }
     }
     if (bestIdx < 0) return null;
-    const kind = Engine.kindFor(bestAbs);
+    const kind = this.kindFor(bestAbs);
     if (!kind) return null;
     const note = this.notes[bestIdx];
     const st = this.states[bestIdx];
@@ -230,7 +206,7 @@ export class Engine {
     const t = songTime + this.inputOffset;
     for (let i = this.cursor; i < this.notes.length; i++) {
       const note = this.notes[i];
-      if (note.time - t > WINDOW.good) break;
+      if (note.time - t > this.capture) break;
       const st = this.states[i];
       if (note.lane !== lane || !st.holding) continue;
       st.holding = false;

@@ -7,8 +7,8 @@ const SettingsSchema = z.object({
   offsetMs: z.number().min(-400).max(400).default(0),
   /** shifts where notes are drawn (and judged) relative to the video, ms; positive = later */
   visualOffsetMs: z.number().min(-500).max(500).default(0),
-  /** measure the player's hit offsets during play and adjust offsetMs on the fly */
-  autoCalibrate: z.boolean().default(true),
+  /** how many hits a calibration run collects before computing the offset */
+  calibrationNotes: z.number().int().min(8).max(64).default(16),
   vibrate: z.boolean().default(true),
   nickname: z.string().max(12).default(""),
 });

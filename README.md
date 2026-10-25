@@ -72,8 +72,9 @@ Windows are deliberately wide because the clock comes from a YouTube embed.
 
 ## Timing calibration
 
-Settings → **타이밍 자동 보정** (on by default). While you play, the engine keeps a rolling
-median of your hit offsets (last 24 hits) and moves the judgement offset toward it, so
-judgement settles within the first dozen notes. The final value is saved as the
-**판정 오프셋** setting for the next run. **노트 위치 보정** shifts where notes are drawn
-when they look early/late against the video. All UI text lives in `lib/strings.ts`.
+Settings → **타이밍 보정**. Enter how many notes the run should collect (8–64, default 16)
+and press **보정 시작**. The game plays the EASY chart against the video with a wide capture
+window and no HP loss; once that many notes are hit it shows the median hit offset and the
+new judgement offset (**판정 오프셋**) for you to apply, re-measure or cancel.
+**노트 위치 보정** shifts where notes are drawn when they look early/late against the video.
+All UI text lives in `lib/strings.ts`.
