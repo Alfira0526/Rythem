@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { clientIp, isPrivileged } from "@/lib/access";
+import { allowList, clientIp, isPrivileged } from "@/lib/access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -7,5 +7,9 @@ export const dynamic = "force-dynamic";
 /** Tells the client whether this connection may see the test bed; also shows the caller's IP. */
 export async function GET(req: Request) {
   const ip = clientIp(req.headers);
-  return NextResponse.json({ privileged: isPrivileged(req.headers), ip }, { headers: { "cache-control": "no-store" } });
+  // "configured" = how many allow-list entries the server can see (never the values themselves)
+  return NextResponse.json(
+    { privileged: isPrivileged(req.headers), ip, configured: allowList().length },
+    { headers: { "cache-control": "no-store" } },
+  );
 }

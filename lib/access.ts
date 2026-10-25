@@ -17,9 +17,17 @@ function normalize(ip: string): string {
   return v.startsWith("::ffff:") ? v.slice(7) : v; // IPv4-mapped IPv6
 }
 
-export function isAllowedIp(ip: string): boolean {
+/** Allow-list entries: split on commas, semicolons, spaces and newlines; quotes are ignored. */
+export function allowList(): string[] {
   const raw = process.env.EDITOR_ALLOWED_IPS ?? "";
-  const list = raw.split(",").map(normalize).filter(Boolean);
+  return raw
+    .split(/[\s,;]+/)
+    .map((e) => normalize(e.replace(/["']/g, "")))
+    .filter(Boolean);
+}
+
+export function isAllowedIp(ip: string): boolean {
+  const list = allowList();
   const me = normalize(ip);
   if (list.length === 0) return process.env.NODE_ENV !== "production";
   if (!me) return false;
