@@ -128,14 +128,25 @@ declare global {
   var __scoreStore: ScoreStore | undefined;
 }
 
+/** Accept the variable names the common Vercel storage integrations create. */
+const URL_ENV_NAMES = ["DATABASE_URL", "STORAGE_URL", "POSTGRES_URL", "NEON_DATABASE_URL"] as const;
+
+export function databaseUrl(): string | undefined {
+  for (const name of URL_ENV_NAMES) {
+    const v = process.env[name];
+    if (v && v.trim()) return v.trim();
+  }
+  return undefined;
+}
+
 export function getStore(): ScoreStore {
   if (!globalThis.__scoreStore) {
-    const url = process.env.DATABASE_URL;
+    const url = databaseUrl();
     globalThis.__scoreStore = url ? new PgStore(url) : new MemoryStore();
   }
   return globalThis.__scoreStore;
 }
 
 export function storeKind(): "postgres" | "memory" {
-  return process.env.DATABASE_URL ? "postgres" : "memory";
+  return databaseUrl() ? "postgres" : "memory";
 }

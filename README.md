@@ -25,7 +25,9 @@ Keyboard: `D F J K` = lanes 1–4, `Esc` = pause. On phones, tap the lanes.
 
 ## Ranking database
 
-Set `DATABASE_URL` (Neon, Supabase, Vercel Postgres, any Postgres). The `scores` table is
+Set `DATABASE_URL` (Neon, Supabase, Vercel Postgres, any Postgres). `STORAGE_URL`,
+`POSTGRES_URL` and `NEON_DATABASE_URL` are accepted too, so the Vercel Neon integration
+works with its default prefix. The `scores` table is
 created automatically. Without it, scores live in process memory and vanish on restart;
 the UI shows a warning in that case.
 
