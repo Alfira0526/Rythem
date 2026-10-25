@@ -26,7 +26,10 @@ export const ChartSchema = z.object({
   title: z.string().min(1),
   artist: z.string().min(1),
   videoId: z.string().regex(/^[A-Za-z0-9_-]{11}$/),
+  /** length of the YouTube video (sec) */
   duration: z.number().positive(),
+  /** length of the analysed audio file (sec), informational */
+  audioDuration: z.number().positive().optional(),
   bpm: z.number().positive(),
   /** time of the first beat (sec) */
   offset: z.number(),

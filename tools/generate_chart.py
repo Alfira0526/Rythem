@@ -128,6 +128,10 @@ def main():
     p.add_argument("--video-id", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--seed", type=int, default=7)
+    p.add_argument("--video-duration", type=float, default=None,
+                   help="length of the YouTube video in seconds when it differs from the audio file")
+    p.add_argument("--video-offset", type=float, default=0.0,
+                   help="seconds to shift every note so the chart lines up with the video (e.g. intro length)")
     args = p.parse_args()
 
     a = analyse(args.audio)
@@ -142,10 +146,11 @@ def main():
         "title": args.title,
         "artist": args.artist,
         "videoId": args.video_id,
-        "duration": round(a["duration"], 3),
+        "duration": round(args.video_duration if args.video_duration else a["duration"], 3),
+        "audioDuration": round(a["duration"], 3),
         "bpm": round(60 / beat, 2),
         "offset": round(float(a["beats"][0]), 3) if len(a["beats"]) else 0.0,
-        "videoOffset": 0.0,
+        "videoOffset": round(args.video_offset, 3),
         "difficulties": diffs,
     }
     with open(args.out, "w", encoding="utf-8") as f:

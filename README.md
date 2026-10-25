@@ -43,8 +43,14 @@ the UI shows a warning in that case.
 pip install librosa soundfile
 python3 tools/generate_chart.py path/to/song.mp3 \
   --id my-song --title "Title" --artist "Artist" --video-id YOUTUBE_ID \
+  --video-duration 155 \
   --out public/charts/my-song.json
 ```
+
+Pass `--video-duration` (seconds) when the YouTube video is longer than the audio file
+(intro/outro). The chart's `videoOffset` then has to be set in the editor:
+play the video, press **첫 노트 맞추기** the moment the first note is heard, then fine-tune
+with Space taps, download, and overwrite the JSON.
 
 Then add the song to `lib/songs.ts`. The generator writes four difficulties
 (easy / normal / hard / extreme) on the detected beat grid; expect to hand-edit the result.

@@ -31,10 +31,19 @@ export default function Editor() {
   const timeRef = useRef(0);
   const rafRef = useRef(0);
 
-  const song = SONGS[0];
+  const [songIdx, setSongIdx] = useState(() => {
+    if (typeof window === "undefined") return 0;
+    const id = new URLSearchParams(window.location.search).get("song");
+    const i = SONGS.findIndex((x) => x.id === id);
+    return i >= 0 ? i : 0;
+  });
+  const song = SONGS[songIdx];
 
   // load chart (local draft first, then the published file)
   useEffect(() => {
+    setChart(null);
+    setTaps([]);
+    setDirty(false);
     const draft = localStorage.getItem(`rhythm-lane.draft.${song.id}`);
     if (draft) {
       try {
@@ -54,25 +63,39 @@ export default function Editor() {
       .catch((e) => setStatus(`불러오기 실패: ${e.message}`));
   }, [song.chartUrl, song.id]);
 
-  // player
+  // player (recreated when the song changes)
+  const chartVideoId = chart?.videoId ?? null;
   useEffect(() => {
-    if (!chart || !hostRef.current || playerRef.current) return;
+    if (!chartVideoId || !hostRef.current) return;
+    const host = hostRef.current;
+    host.innerHTML = "";
     const target = document.createElement("div");
-    hostRef.current.appendChild(target);
+    host.appendChild(target);
+    let cancelled = false;
     createPlayer({
       el: target,
-      videoId: chart.videoId,
+      videoId: chartVideoId,
       onStateChange: (s) => setPlaying(s === YT_STATE.PLAYING),
     }).then((p) => {
+      if (cancelled) {
+        p.destroy();
+        return;
+      }
       playerRef.current = p;
       clockRef.current = new SyncClock(p);
       clockRef.current.start();
     });
     return () => {
-      playerRef.current?.destroy();
+      cancelled = true;
+      try {
+        playerRef.current?.destroy();
+      } catch {
+        /* ignore */
+      }
       playerRef.current = null;
+      clockRef.current = null;
     };
-  }, [chart]);
+  }, [chartVideoId]);
 
   const beat = chart ? 60 / chart.bpm : 0.5;
   const notes = useMemo(() => (chart ? chart.difficulties[difficulty] : []), [chart, difficulty]);
@@ -247,6 +270,22 @@ export default function Editor() {
     localStorage.setItem(`rhythm-lane.draft.${song.id}`, JSON.stringify(c));
   };
 
+  /** Set videoOffset so the chart's first note lands on the current video time. */
+  const alignFirstNote = () => {
+    if (!chart) return;
+    const all = Object.values(chart.difficulties).flat();
+    if (!all.length) return;
+    const first = Math.min(...all.map((n) => n[0]));
+    const now = (() => {
+      try {
+        return clockRef.current?.now() ?? playerRef.current?.getCurrentTime() ?? timeRef.current;
+      } catch {
+        return timeRef.current;
+      }
+    })();
+    setVideoOffset(now - first);
+  };
+
   const download = () => {
     if (!chart) return;
     const blob = new Blob([JSON.stringify(chart)], { type: "application/json" });
@@ -268,7 +307,12 @@ export default function Editor() {
   return (
     <div className="mx-auto grid min-h-dvh max-w-[1100px] grid-cols-1 gap-3 p-3 md:grid-cols-[360px_1fr]">
       <div className="space-y-3 text-sm">
-        <h1 className="text-lg font-bold">채보 편집기 · {chart.title}</h1>
+        <div className="flex items-center justify-between gap-2">
+          <h1 className="text-lg font-bold">채보 편집기</h1>
+          <select className="field w-auto" value={songIdx} onChange={(e) => setSongIdx(Number(e.target.value))}>
+            {SONGS.map((x, i) => <option key={x.id} value={i}>{x.title} · {x.artist}</option>)}
+          </select>
+        </div>
         <div className="relative w-full bg-black" style={{ aspectRatio: "16 / 9" }}>
           <div ref={hostRef} className="absolute inset-0 [&>div]:h-full [&>div]:w-full [&_iframe]:h-full [&_iframe]:w-full" />
         </div>
@@ -311,10 +355,17 @@ export default function Editor() {
             <span className="tabular-nums">{(chart.videoOffset * 1000).toFixed(0)}ms</span>
           </div>
           <div className="flex gap-1">
-            {[-50, -10, 10, 50].map((d) => (
-              <button key={d} className="btn flex-1 px-2 py-1" onClick={() => setVideoOffset(chart.videoOffset + d / 1000)}>{d > 0 ? "+" : ""}{d}</button>
+            {[-1000, -50, -10, 10, 50, 1000].map((d) => (
+              <button key={d} className="btn flex-1 px-1 py-1 text-xs" onClick={() => setVideoOffset(chart.videoOffset + d / 1000)}>{d > 0 ? "+" : ""}{d}</button>
             ))}
           </div>
+          <button className="btn btn-secondary w-full py-2 text-sm" onClick={alignFirstNote}>첫 노트 맞추기 (지금 이 순간 = 첫 노트)</button>
+          <p className="text-xs muted">
+            MV에 인트로가 있어 음원과 시작점이 다르면: 영상을 재생하다가 첫 노트가 들리는 순간 위 버튼을 누르세요. 그 뒤 Space 탭으로 미세 조정해요.
+            {chart.audioDuration && Math.abs(chart.duration - chart.audioDuration) > 1 && (
+              <> 이 곡은 영상({chart.duration.toFixed(0)}s)과 음원({chart.audioDuration.toFixed(0)}s) 길이가 달라요.</>
+            )}
+          </p>
           <p className="text-xs muted">
             영상을 재생하며 박자에 맞춰 Space를 8번 이상 누르면 오차를 측정해요.
             {tapOffsetMs !== null && (
