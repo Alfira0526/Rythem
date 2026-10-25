@@ -10,6 +10,7 @@ Difficulty rules:
   easy   : one note per beat in loud sections, every 2nd beat elsewhere
   normal : beats + the stronger off-beat onsets (8th-note feel), some holds
   hard   : most detected onsets (up to 16ths), more holds, occasional chords
+  extreme: nearly every onset on a 16th grid, frequent chords, holds (unlocked by a HARD full combo)
 Lane choice follows the onset's spectral centroid (low -> left, high -> right)
 with a no-repeat rule so hands alternate.
 """
@@ -60,6 +61,7 @@ def build(a, level, rng):
     loud = np.percentile(rms, 60)
     s_hi = np.percentile(strength, 55)
     s_mid = np.percentile(strength, 35)
+    s_lo = np.percentile(strength, 15)
     c_lo, c_hi = np.percentile(cent, 10), np.percentile(cent, 90)
 
     cand = []  # (time, weight)
@@ -71,13 +73,13 @@ def build(a, level, rng):
         env_t = librosa.frames_to_time(np.arange(len(a["onset_env"])), sr=a["sr"], hop_length=a["hop"])
         for b in beats:
             cand.append((float(b), at(env_t, a["onset_env"], b)))
-        thr = s_mid if level == "hard" else s_hi
-        min_gap = beat / 4 * 0.9 if level == "hard" else beat / 2 * 0.9
+        thr = {"normal": s_hi, "hard": s_mid, "extreme": s_lo}[level]
+        min_gap = beat / 4 * 0.9 if level in ("hard", "extreme") else beat / 2 * 0.9
         for t, s in zip(onsets, strength):
             if s < thr:
                 continue
             # snap to the nearest 16th (hard) / 8th (normal) grid
-            div = 4 if level == "hard" else 2
+            div = 4 if level in ("hard", "extreme") else 2
             nearest_beat = beats[np.argmin(np.abs(beats - t))]
             snapped = nearest_beat + round((t - nearest_beat) / (beat / div)) * (beat / div)
             cand.append((float(snapped), float(s)))
@@ -107,10 +109,11 @@ def build(a, level, rng):
             # a strong hit followed by sustained sound and a weak next onset: hold it
             dur = round(min(gap + beat * 0.5, beat * 3), 3)
         notes.append([round(t, 3), lane, dur])
-        # chords on strong beats for hard
-        if level == "hard" and w >= np.percentile(strength, 90) and gap >= beat * 0.9:
-            other = (lane + 2) % 4
-            notes.append([round(t, 3), other, 0.0])
+        # chords on strong hits: hard on the loudest 10 %, extreme on the loudest 30 %
+        chord_pct = {"hard": 90, "extreme": 70}.get(level)
+        if chord_pct is not None and w >= np.percentile(strength, chord_pct) and gap >= beat * (0.9 if level == "hard" else 0.45):
+            other = (lane + 2) % 4 if level == "hard" else (lane + 1 + rng.integers(3)) % 4
+            notes.append([round(t, 3), int(other), 0.0])
         prev_lane = lane
     notes.sort(key=lambda n: (n[0], n[1]))
     return notes, beat
@@ -131,7 +134,7 @@ def main():
     rng = np.random.default_rng(args.seed)
     diffs = {}
     beat = 60 / a["tempo"]
-    for level in ("easy", "normal", "hard"):
+    for level in ("easy", "normal", "hard", "extreme"):
         notes, beat = build(a, level, rng)
         diffs[level] = notes
     chart = {

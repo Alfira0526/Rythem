@@ -46,8 +46,15 @@ python3 tools/generate_chart.py path/to/song.mp3 \
   --out public/charts/my-song.json
 ```
 
-Then add the song to `lib/songs.ts`. The generator writes three difficulties
-(easy / normal / hard) on the detected beat grid; expect to hand-edit the result.
+Then add the song to `lib/songs.ts`. The generator writes four difficulties
+(easy / normal / hard / extreme) on the detected beat grid; expect to hand-edit the result.
+
+## Difficulties and unlocks
+
+EASY, NORMAL and HARD are open. **EXTREME** unlocks per song after a HARD full combo
+(stored in the browser). The ranking API also refuses an EXTREME score unless that
+player already has a HARD full-combo row on the leaderboard, so the unlock cannot be
+faked just by editing localStorage.
 
 ## Edit a chart
 
@@ -65,8 +72,8 @@ then download the JSON and overwrite `public/charts/<id>.json`.
 | GOOD | ±170 ms | 50 |
 | MISS | — | 0 |
 
-Score = points / max points × 1,000,000. Life starts at 100; MISS costs 5 / 7 / 9
-(easy / normal / hard), PERFECT heals 0.8 / 0.6 / 0.5; life 0 = retire (DNF).
+Score = points / max points × 1,000,000. HP starts at 100; MISS costs 5 / 7 / 9 / 11
+(easy / normal / hard / extreme), PERFECT heals 0.8 / 0.6 / 0.5 / 0.4; HP 0 = game over.
 Hold notes are judged at the head and again at the tail (release too early = MISS).
 Windows are deliberately wide because the clock comes from a YouTube embed.
 

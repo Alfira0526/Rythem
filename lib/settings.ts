@@ -17,6 +17,7 @@ export type Settings = z.infer<typeof SettingsSchema>;
 const KEY = "rhythm-lane.settings";
 const PLAYER_KEY = "rhythm-lane.playerId";
 const LOCAL_BEST_KEY = "rhythm-lane.localBest";
+const UNLOCK_KEY = "rhythm-lane.unlocks";
 
 function storage(): Storage | null {
   try {
@@ -69,5 +70,25 @@ export function saveLocalBest(songId: string, difficulty: string, score: number)
   if ((all[key] ?? 0) >= score) return false;
   all[key] = score;
   storage()?.setItem(LOCAL_BEST_KEY, JSON.stringify(all));
+  return true;
+}
+
+export type Unlocks = Record<string, true>; // key = `${songId}:${difficulty}`
+
+export function loadUnlocks(): Unlocks {
+  try {
+    return JSON.parse(storage()?.getItem(UNLOCK_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
+/** Returns true when this call newly unlocked the key. */
+export function saveUnlock(songId: string, difficulty: string): boolean {
+  const all = loadUnlocks();
+  const key = `${songId}:${difficulty}`;
+  if (all[key]) return false;
+  all[key] = true;
+  storage()?.setItem(UNLOCK_KEY, JSON.stringify(all));
   return true;
 }

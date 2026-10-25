@@ -4,6 +4,9 @@ export const S = {
   // home
   difficulty: "난이도",
   bestOnDevice: "이 기기 최고 점수",
+  locked: "잠김",
+  lockedHint: (req: string, target: string) => `${req}를 풀콤보로 클리어하면 ${target}이 열려요.`,
+  unlocked: (target: string) => `${target} 난이도가 열렸어요!`,
   play: "플레이",
   settings: "설정",
   howTo: "조작법",
@@ -47,6 +50,7 @@ export const S = {
   currentRank: (rank: number, best: number) => `현재 ${rank}위 · 최고 ${best.toLocaleString("en-US")}`,
   memoryWarning: "서버에 데이터베이스가 연결되지 않아 임시 저장 중이에요. 재배포되면 사라져요.",
   submitFailed: (why: string) => `올리지 못했어요 (${why}). 이 기록은 이 기기에만 남아요.`,
+  extremeLocked: "순위표에 EXTREME 기록을 올리려면 HARD 풀콤보 기록이 먼저 순위표에 있어야 해요.",
   retry: "한 번 더",
   viewLeaderboard: "순위표",
   toHome: "곡 선택",

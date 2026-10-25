@@ -1,13 +1,17 @@
 import { z } from "zod";
 
-export const DIFFICULTIES = ["easy", "normal", "hard"] as const;
+export const DIFFICULTIES = ["easy", "normal", "hard", "extreme"] as const;
 export type Difficulty = (typeof DIFFICULTIES)[number];
 
 export const DIFFICULTY_LABEL: Record<Difficulty, string> = {
   easy: "EASY",
   normal: "NORMAL",
   hard: "HARD",
+  extreme: "EXTREME",
 };
+
+/** difficulty that must be full-comboed to unlock the key */
+export const UNLOCK_REQUIREMENT: Partial<Record<Difficulty, Difficulty>> = { extreme: "hard" };
 
 /** [time(sec), lane(0-3), duration(sec, 0 = tap)] */
 export const NoteTupleSchema = z.tuple([
@@ -32,6 +36,7 @@ export const ChartSchema = z.object({
     easy: z.array(NoteTupleSchema),
     normal: z.array(NoteTupleSchema),
     hard: z.array(NoteTupleSchema),
+    extreme: z.array(NoteTupleSchema),
   }),
 });
 export type Chart = z.infer<typeof ChartSchema>;

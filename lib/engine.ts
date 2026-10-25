@@ -16,6 +16,7 @@ export const LIFE_RULE: Record<Difficulty, { miss: number; heal: number }> = {
   easy: { miss: 5, heal: 0.8 },
   normal: { miss: 7, heal: 0.6 },
   hard: { miss: 9, heal: 0.5 },
+  extreme: { miss: 11, heal: 0.4 },
 };
 
 /** released this early before the tail counts as dropping the hold */

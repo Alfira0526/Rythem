@@ -17,6 +17,7 @@ export interface ScoreStore {
   upsertBest(row: ScoreRow): Promise<{ improved: boolean; previous: number | null; best: number }>;
   top(songId: string, difficulty: string, limit: number): Promise<ScoreRow[]>;
   rankOf(songId: string, difficulty: string, playerId: string): Promise<{ rank: number; score: number } | null>;
+  hasFullCombo(songId: string, difficulty: string, playerId: string): Promise<boolean>;
 }
 
 /* ---------- in-memory fallback (dev / no DATABASE_URL) ---------- */
@@ -30,10 +31,10 @@ class MemoryStore implements ScoreStore {
     const k = this.key(row);
     const prev = this.rows.get(k) ?? null;
     if (prev && prev.score >= row.score) {
-      this.rows.set(k, { ...prev, nickname: row.nickname });
+      this.rows.set(k, { ...prev, nickname: row.nickname, fullCombo: prev.fullCombo || row.fullCombo });
       return { improved: false, previous: prev.score, best: prev.score };
     }
-    this.rows.set(k, row);
+    this.rows.set(k, { ...row, fullCombo: row.fullCombo || prev?.fullCombo === true });
     return { improved: true, previous: prev?.score ?? null, best: row.score };
   }
   private sorted(songId: string, difficulty: string) {
@@ -48,6 +49,9 @@ class MemoryStore implements ScoreStore {
     const list = this.sorted(songId, difficulty);
     const i = list.findIndex((r) => r.playerId === playerId);
     return i < 0 ? null : { rank: i + 1, score: list[i].score };
+  }
+  async hasFullCombo(songId: string, difficulty: string, playerId: string) {
+    return this.rows.get(this.key({ songId, difficulty, playerId }))?.fullCombo === true;
   }
 }
 
@@ -92,7 +96,7 @@ class PgStore implements ScoreStore {
       WHERE song_id=${row.songId} AND difficulty=${row.difficulty} AND player_id=${row.playerId}`;
     const previous = prev.length ? Number(prev[0].score) : null;
     if (previous !== null && previous >= row.score) {
-      await this.sql`UPDATE scores SET nickname=${row.nickname}
+      await this.sql`UPDATE scores SET nickname=${row.nickname}, full_combo = (full_combo OR ${row.fullCombo})
         WHERE song_id=${row.songId} AND difficulty=${row.difficulty} AND player_id=${row.playerId}`;
       return { improved: false, previous, best: previous };
     }
@@ -102,7 +106,7 @@ class PgStore implements ScoreStore {
               ${row.maxCombo}, ${row.fullCombo}, ${row.updatedAt})
       ON CONFLICT (song_id, difficulty, player_id) DO UPDATE SET
         nickname=EXCLUDED.nickname, score=EXCLUDED.score, accuracy=EXCLUDED.accuracy,
-        max_combo=EXCLUDED.max_combo, full_combo=EXCLUDED.full_combo, updated_at=EXCLUDED.updated_at`;
+        max_combo=EXCLUDED.max_combo, full_combo=(scores.full_combo OR EXCLUDED.full_combo), updated_at=EXCLUDED.updated_at`;
     return { improved: true, previous, best: row.score };
   }
   async top(songId: string, difficulty: string, limit: number) {
@@ -120,6 +124,13 @@ class PgStore implements ScoreStore {
         FROM scores WHERE song_id=${songId} AND difficulty=${difficulty}
       ) t WHERE player_id=${playerId}`;
     return rows.length ? { rank: Number(rows[0].rank), score: Number(rows[0].score) } : null;
+  }
+  async hasFullCombo(songId: string, difficulty: string, playerId: string) {
+    await this.ready;
+    const rows = await this.sql`
+      SELECT 1 FROM scores
+      WHERE song_id=${songId} AND difficulty=${difficulty} AND player_id=${playerId} AND full_combo = true`;
+    return rows.length > 0;
   }
 }
 

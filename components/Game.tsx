@@ -1,11 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChartSchema, DIFFICULTIES, DIFFICULTY_LABEL, toNotes, type Chart, type Difficulty, type Note } from "@/lib/chart";
+import { ChartSchema, DIFFICULTIES, DIFFICULTY_LABEL, UNLOCK_REQUIREMENT, toNotes, type Chart, type Difficulty, type Note } from "@/lib/chart";
 import { Engine, median, type JudgeKind } from "@/lib/engine";
 import { Renderer } from "@/lib/render";
 import { SONGS } from "@/lib/songs";
-import { getPlayerId, loadLocalBest, loadSettings, saveLocalBest, saveSettings, type Settings } from "@/lib/settings";
+import { getPlayerId, loadLocalBest, loadSettings, loadUnlocks, saveLocalBest, saveSettings, saveUnlock, type Settings, type Unlocks } from "@/lib/settings";
 import { createPlayer, isVideoAdvancing, SyncClock, YT_STATE, type YTPlayer } from "@/lib/youtube";
 import { fetchLeaderboard, submitScore, type Leaderboard, type SubmitResult } from "@/lib/api";
 import { S } from "@/lib/strings";
@@ -26,6 +26,8 @@ interface Outcome {
   counts: Record<JudgeKind, number>;
   retired: boolean;
   avgOffsetMs: number | null;
+  /** difficulty newly unlocked by this run, if any */
+  unlocked: Difficulty | null;
 }
 
 interface CalibrationOutcome {
@@ -50,6 +52,7 @@ export default function Game() {
   const [calibration, setCalibration] = useState<CalibrationOutcome | null>(null);
   const [hud, setHud] = useState({ score: 0, life: 100, hits: 0 });
   const [localBest, setLocalBest] = useState<Record<string, number>>({});
+  const [unlocks, setUnlocks] = useState<Unlocks>({});
 
   const song = SONGS[songIdx];
 
@@ -73,6 +76,7 @@ export default function Game() {
 
   useEffect(() => {
     setLocalBest(loadLocalBest());
+    setUnlocks(loadUnlocks());
   }, []);
 
   const persistSettings = useCallback((s: Settings) => {
@@ -132,14 +136,23 @@ export default function Game() {
         setScreen("result");
         return;
       }
+      const fullCombo = !retired && engine.fullCombo;
+      let unlocked: Difficulty | null = null;
+      if (fullCombo) {
+        for (const d of DIFFICULTIES) {
+          if (UNLOCK_REQUIREMENT[d] === difficulty && saveUnlock(song.id, d)) unlocked = d;
+        }
+        if (unlocked) setUnlocks(loadUnlocks());
+      }
       const out: Outcome = {
         score: engine.score,
         accuracy: engine.accuracy,
         maxCombo: engine.stats.maxCombo,
-        fullCombo: !retired && engine.fullCombo,
+        fullCombo,
         counts: { ...engine.stats.counts },
         retired,
         avgOffsetMs: engine.averageOffsetMs(),
+        unlocked,
       };
       setOutcome(out);
       if (!retired && saveLocalBest(song.id, difficulty, out.score)) setLocalBest(loadLocalBest());
@@ -416,6 +429,7 @@ export default function Game() {
           difficulty={difficulty}
           setDifficulty={setDifficulty}
           best={localBest[bestKey]}
+          unlocks={unlocks}
           onStart={() => void startLoading("play")}
           onSettings={() => setScreen("settings")}
           onRanking={() => setScreen("ranking")}
@@ -584,6 +598,7 @@ function HomeScreen(props: {
   difficulty: Difficulty;
   setDifficulty: (d: Difficulty) => void;
   best?: number;
+  unlocks: Unlocks;
   onStart: () => void;
   onSettings: () => void;
   onRanking: () => void;
@@ -591,6 +606,9 @@ function HomeScreen(props: {
 }) {
   const song = SONGS[props.songIdx];
   const many = SONGS.length > 1;
+  const isLocked = (d: Difficulty) => !!UNLOCK_REQUIREMENT[d] && !props.unlocks[`${song.id}:${d}`];
+  const lockedSel = isLocked(props.difficulty);
+  const req = UNLOCK_REQUIREMENT[props.difficulty];
   return (
     <div className="flex min-h-dvh flex-col justify-center gap-6 px-5 py-8">
       <p className="text-center text-[11px] font-extrabold tracking-[6px]" style={{ color: "var(--serenity)" }}>{S.appName}</p>
@@ -605,16 +623,31 @@ function HomeScreen(props: {
       </div>
       <div>
         <p className="mb-2 text-sm muted">{S.difficulty}</p>
-        <div className="grid grid-cols-3 gap-2">
-          {DIFFICULTIES.map((d) => (
-            <button key={d} className={`btn ${props.difficulty === d ? "btn-selected" : ""}`} onClick={() => props.setDifficulty(d)}>
-              {DIFFICULTY_LABEL[d]}
-            </button>
-          ))}
+        <div className="grid grid-cols-4 gap-2">
+          {DIFFICULTIES.map((d) => {
+            const locked = isLocked(d);
+            return (
+              <button
+                key={d}
+                className={`btn px-1 text-sm ${props.difficulty === d ? "btn-selected" : ""}`}
+                style={locked ? { borderStyle: "dashed", color: "var(--muted)" } : {}}
+                onClick={() => props.setDifficulty(d)}
+                aria-label={locked ? `${DIFFICULTY_LABEL[d]} (${S.locked})` : DIFFICULTY_LABEL[d]}
+              >
+                {locked ? "🔒 " : ""}{DIFFICULTY_LABEL[d]}
+              </button>
+            );
+          })}
         </div>
-        <p className="mt-2 text-xs muted">{S.bestOnDevice} {props.best ? props.best.toLocaleString("en-US") : "—"}</p>
+        <p className="mt-2 text-xs muted">
+          {lockedSel && req
+            ? S.lockedHint(DIFFICULTY_LABEL[req], DIFFICULTY_LABEL[props.difficulty])
+            : `${S.bestOnDevice} ${props.best ? props.best.toLocaleString("en-US") : "—"}`}
+        </p>
       </div>
-      <button className="btn btn-primary py-4 text-lg" onClick={props.onStart}>{S.play}</button>
+      <button className="btn btn-primary py-4 text-lg" onClick={props.onStart} disabled={lockedSel}>
+        {lockedSel ? S.locked : S.play}
+      </button>
       <div className="grid grid-cols-3 gap-2">
         <button className="btn" onClick={props.onSettings}>{S.settings}</button>
         <button className="btn" onClick={props.onTutorial}>{S.howTo}</button>
@@ -739,9 +772,9 @@ function RankingScreen({ songId, initialDifficulty, onBack }: { songId: string; 
   return (
     <div className="flex min-h-dvh flex-col gap-4 px-5 py-8">
       <Header title={S.leaderboard} onBack={onBack} />
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-4 gap-2">
         {DIFFICULTIES.map((d) => (
-          <button key={d} className={`btn ${difficulty === d ? "btn-selected" : ""}`} onClick={() => setDifficulty(d)}>
+          <button key={d} className={`btn px-1 text-sm ${difficulty === d ? "btn-selected" : ""}`} onClick={() => setDifficulty(d)}>
             {DIFFICULTY_LABEL[d]}
           </button>
         ))}
@@ -832,6 +865,11 @@ function ResultPanel(props: {
           </div>
         ))}
       </div>
+      {o.unlocked && (
+        <p className="mt-3 rounded-xl border px-3 py-2 text-center text-sm font-bold" style={{ borderColor: "var(--rose)", color: "var(--rose)" }}>
+          {S.unlocked(DIFFICULTY_LABEL[o.unlocked])}
+        </p>
+      )}
       {hints.map((h) => <p key={h} className="mt-3 text-xs text-[var(--warn)]">{h}</p>)}
 
       <div className="card mt-3 p-3 text-sm">
@@ -851,7 +889,9 @@ function ResultPanel(props: {
             </button>
           </div>
         )}
-        {state === "failed" && <p className="mt-2 text-xs text-[var(--bad)]">{S.submitFailed(err ?? "")}</p>}
+        {state === "failed" && (
+          <p className="mt-2 text-xs text-[var(--bad)]">{err === "extreme_locked" ? S.extremeLocked : S.submitFailed(err ?? "")}</p>
+        )}
       </div>
 
       <div className="mt-3 grid grid-cols-3 gap-2">

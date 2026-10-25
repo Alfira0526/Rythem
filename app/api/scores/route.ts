@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { ChartSchema, DIFFICULTIES } from "@/lib/chart";
+import { ChartSchema, DIFFICULTIES, UNLOCK_REQUIREMENT } from "@/lib/chart";
 import { getStore, storeKind } from "@/lib/db";
 import { findSong } from "@/lib/songs";
 
@@ -94,6 +94,10 @@ export async function POST(req: Request) {
   }
 
   const store = getStore();
+  const required = UNLOCK_REQUIREMENT[s.difficulty];
+  if (required && !(await store.hasFullCombo(s.songId, required, s.playerId))) {
+    return NextResponse.json({ error: `${s.difficulty}_locked` }, { status: 403 });
+  }
   const result = await store.upsertBest({
     songId: s.songId,
     difficulty: s.difficulty,
