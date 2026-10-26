@@ -276,13 +276,14 @@ export default function Editor() {
     const all = Object.values(chart.difficulties).flat();
     if (!all.length) return;
     const first = Math.min(...all.map((n) => n[0]));
-    const now = (() => {
-      try {
-        return clockRef.current?.now() ?? playerRef.current?.getCurrentTime() ?? timeRef.current;
-      } catch {
-        return timeRef.current;
-      }
-    })();
+    // use the player's own time unless it is actually playing (the smoothed clock only applies then)
+    const p = playerRef.current;
+    let now = timeRef.current;
+    try {
+      if (p) now = p.getPlayerState() === YT_STATE.PLAYING ? (clockRef.current?.now() ?? p.getCurrentTime()) : p.getCurrentTime();
+    } catch {
+      /* keep timeRef */
+    }
     setVideoOffset(now - first);
   };
 

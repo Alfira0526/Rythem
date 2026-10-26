@@ -117,13 +117,18 @@ export function createPlayer(opts: CreatePlayerOptions): Promise<YTPlayer> {
 /**
  * SyncClock: anchors performance.now() to the player's reported time and
  * nudges the anchor whenever a fresh sample disagrees. Small disagreements
- * are blended in; large ones (seek, ad end, buffering) re-anchor at once.
+ * are blended in; large ones (seek, ad end) re-anchor at once. While the
+ * player is not PLAYING (paused, buffering, cued) the clock freezes instead
+ * of running ahead on the wall clock.
  */
 export class SyncClock {
   private anchorSong = 0;
   private anchorPerf = 0;
   private lastSample = -1;
+  private lastSampleAt = 0;
   private running = false;
+  private frozen = false;
+  private frozenValue = 0;
   /** how far the last sample disagreed with the prediction (sec) */
   public lastError = 0;
 
@@ -131,9 +136,11 @@ export class SyncClock {
 
   start() {
     this.running = true;
+    this.frozen = false;
     this.anchorSong = this.safeTime();
     this.anchorPerf = performance.now() / 1000;
     this.lastSample = this.anchorSong;
+    this.lastSampleAt = this.anchorPerf;
   }
 
   stop() {
@@ -148,14 +155,43 @@ export class SyncClock {
     }
   }
 
+  private isPlaying(): boolean {
+    try {
+      return this.player.getPlayerState() === YT_STATE.PLAYING;
+    } catch {
+      return false;
+    }
+  }
+
   /** Call once per animation frame. Returns the smoothed song time (sec). */
   now(): number {
     const perf = performance.now() / 1000;
     if (!this.running) return this.anchorSong;
-    const predicted = this.anchorSong + (perf - this.anchorPerf);
     const sample = this.safeTime();
+    if (!this.isPlaying()) {
+      // paused / buffering / cued: hold still at the player's own time
+      if (!this.frozen) {
+        this.frozen = true;
+        this.frozenValue = sample;
+      } else if (sample !== this.lastSample) {
+        this.frozenValue = sample; // a seek while paused
+      }
+      this.lastSample = sample;
+      return this.frozenValue;
+    }
+    if (this.frozen) {
+      // resumed: re-anchor from where the player actually is
+      this.frozen = false;
+      this.anchorSong = sample;
+      this.anchorPerf = perf;
+      this.lastSample = sample;
+      this.lastSampleAt = perf;
+      return sample;
+    }
+    const predicted = this.anchorSong + (perf - this.anchorPerf);
     if (sample !== this.lastSample) {
       this.lastSample = sample;
+      this.lastSampleAt = perf;
       const err = sample - predicted;
       this.lastError = err;
       if (Math.abs(err) > 0.12) {
@@ -165,6 +201,9 @@ export class SyncClock {
       }
       // blend 15% of the error per fresh sample
       this.anchorSong += err * 0.15;
+    } else if (perf - this.lastSampleAt > 1.0) {
+      // the player reports PLAYING but its time has not moved for a second: stalled
+      return this.anchorSong + (this.lastSampleAt - this.anchorPerf);
     }
     return this.anchorSong + (perf - this.anchorPerf);
   }
